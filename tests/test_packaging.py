@@ -18,6 +18,7 @@ class PackagingTests(unittest.TestCase):
             packaging = project / "packaging"
             packaging.mkdir(parents=True)
             shutil.copyfile(root / "packaging/build_app.sh", packaging / "build_app.sh")
+            shutil.copyfile(root / "LICENSE", project / "LICENSE")
             (packaging / "launcher.rs").write_text("fn main() {}\n")
             (project / "src/jev_feishu").mkdir(parents=True)
             (project / "src/jev_feishu/__init__.py").write_text("")
@@ -66,6 +67,8 @@ class PackagingTests(unittest.TestCase):
                                         capture_output=True, text=True, timeout=5).stdout.splitlines()
             self.assertIn("com.apple.FinderInfo", attributes, "simulate reattached metadata")
             self.assertTrue((output / "Contents/MacOS/JevFeishu").is_file())
+            self.assertEqual((output / "Contents/Resources/LICENSE").read_bytes(),
+                             (root / "LICENSE").read_bytes())
             clean_copy = folder / "install-preview/Jev 飞书助手.app"
             clean_copy.parent.mkdir()
             subprocess.run([shutil.which("rsync"), "-a", str(output) + "/", str(clean_copy) + "/"],

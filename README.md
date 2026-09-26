@@ -48,7 +48,7 @@ open "/Applications/Jev 飞书助手.app"
 
 ## 许可证与来源
 
-本项目以 [MIT 许可证](LICENSE) 发布。飞书版新增实现署名为 `ai-freer`；参考的微信版 `jev-chat-jarvis-mac` 保留 `eatmoreduck` 的原版权声明。具体参考范围见[上游来源](docs/upstream.md)。
+本项目以 [MIT 许可证](LICENSE) 发布，新增实现署名为 `ai-freer`。判断模块沿用了微信版 `jev-chat-jarvis-mac` 的部分意图说明、风险文案和问题提示，因此保留 `eatmoreduck` 的原版权声明；具体范围见[上游来源](docs/upstream.md)。
 
 ## 开发验证
 

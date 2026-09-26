@@ -12,7 +12,8 @@ runtime_source="$(uv run --python 3.12 python -c 'import sys; print(sys.base_pre
 runtime_target="$app_path/Contents"
 site_target="$runtime_target/lib/python3.12/site-packages"
 
-mkdir -p "$app_path/Contents/MacOS" "$site_target"
+mkdir -p "$app_path/Contents/MacOS" "$app_path/Contents/Resources" "$site_target"
+cp LICENSE "$app_path/Contents/Resources/LICENSE"
 cp "$runtime_source/bin/python3.12" "$app_path/Contents/MacOS/JevFeishuPython"
 rsync -a --exclude='__pycache__' --exclude='*.pyc' "$runtime_source/lib/" "$runtime_target/lib/"
 rsync -a --exclude='__pycache__' --exclude='*.pyc' \
