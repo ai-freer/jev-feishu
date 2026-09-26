@@ -4,7 +4,7 @@
 - 固定标签：`v0.5.0`
 - 固定提交：`5814df87cf2a6f6b3210208d8afdb62ce6f5f386`
 - 核验日期：2026-09-24；独立临时克隆的 HEAD 与计划一致。
-- `LICENSE`：原样保留上游 MIT 许可证及 eatmoreduck 版权声明。
+- `LICENSE`：本项目以 MIT 发布，新增实现署名为 ai-freer；保留上游 MIT 授权文本及 eatmoreduck 原版权声明。
 - `pyproject.toml`：仅选择上游的 ApplicationServices 和 Cocoa 依赖及最低版本，供后续 AX 与悬浮窗使用。
 - `judge_jev.py` / `judge.py`：参考 System One 的 choice/score 请求形状及意图、风险标签；在 `jev.py` 中重新实现，全局 Jev 设置关闭时不发起请求。
 - `styles.py` / `generate.py`：参考三种话术、每种两条的候选结构；在 `replies.py` 中重写飞书场景提示词与本机 Ollama 调用。

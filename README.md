@@ -46,6 +46,10 @@ open "/Applications/Jev 飞书助手.app"
 
 读取错误会清空已有候选；当前消息为本人发送、已撤回或没有可处理普通文本时显示对应状态。界面失去飞书当前聊天身份时停止读取，不以旧候选代替新会话结果。
 
+## 许可证与来源
+
+本项目以 [MIT 许可证](LICENSE) 发布。飞书版新增实现署名为 `ai-freer`；参考的微信版 `jev-chat-jarvis-mac` 保留 `eatmoreduck` 的原版权声明。具体参考范围见[上游来源](docs/upstream.md)。
+
 ## 开发验证
 
 ```bash

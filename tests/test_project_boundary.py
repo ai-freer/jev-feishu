@@ -27,9 +27,11 @@ class ProjectBoundaryTests(unittest.TestCase):
                     source,
                 ))
 
-    def test_upstream_mit_license_preserved(self):
+    def test_project_mit_license_retains_upstream_notice(self):
         license_text = (ROOT / "LICENSE").read_text()
         self.assertIn("MIT License", license_text)
+        self.assertIn("Copyright (c) 2026 ai-freer", license_text)
+        self.assertIn("Copyright (c) 2026 eatmoreduck", license_text)
         self.assertIn("Permission is hereby granted, free of charge", license_text)
         self.assertIn("THE SOFTWARE IS PROVIDED", license_text)
 
