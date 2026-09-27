@@ -2,7 +2,7 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
-source_app="$PWD/dist/Jev 飞书助手.app"
+source_app="$PWD/dist/build.noindex/Jev 飞书助手.app"
 target_app="/Applications/Jev 飞书助手.app"
 
 if [[ ! -d "$source_app" ]]; then

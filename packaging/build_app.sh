@@ -6,7 +6,7 @@ uv sync --python 3.12 --no-dev --quiet
 
 build_root="$(mktemp -d -t jev-feishu-build)"
 trap 'rm -rf "$build_root"' EXIT
-output_app="$PWD/dist/Jev 飞书助手.app"
+output_app="$PWD/dist/build.noindex/Jev 飞书助手.app"
 app_path="$build_root/Jev 飞书助手.app"
 runtime_source="$(uv run --python 3.12 python -c 'import sys; print(sys.base_prefix)')"
 runtime_target="$app_path/Contents"
@@ -14,6 +14,7 @@ site_target="$runtime_target/lib/python3.12/site-packages"
 
 mkdir -p "$app_path/Contents/MacOS" "$app_path/Contents/Resources" "$site_target"
 cp LICENSE "$app_path/Contents/Resources/LICENSE"
+cp packaging/assets/JevFeishu.icns "$app_path/Contents/Resources/JevFeishu.icns"
 cp "$runtime_source/bin/python3.12" "$app_path/Contents/MacOS/JevFeishuPython"
 rsync -a --exclude='__pycache__' --exclude='*.pyc' "$runtime_source/lib/" "$runtime_target/lib/"
 rsync -a --exclude='__pycache__' --exclude='*.pyc' \
@@ -37,6 +38,7 @@ cat > "$app_path/Contents/Info.plist" <<'PLIST'
   <key>CFBundleDisplayName</key><string>Jev 飞书助手</string>
   <key>CFBundleExecutable</key><string>JevFeishu</string>
   <key>CFBundleIdentifier</key><string>com.danielpan.jevfeishu</string>
+  <key>CFBundleIconFile</key><string>JevFeishu.icns</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>0.1.0</string>
   <key>CFBundleVersion</key><string>1</string>

@@ -1,6 +1,7 @@
 import json
 import os
 from pathlib import Path
+import plistlib
 import shutil
 import subprocess
 import sys
@@ -18,6 +19,8 @@ class PackagingTests(unittest.TestCase):
             packaging = project / "packaging"
             packaging.mkdir(parents=True)
             shutil.copyfile(root / "packaging/build_app.sh", packaging / "build_app.sh")
+            (packaging / "assets").mkdir()
+            shutil.copyfile(root / "packaging/assets/JevFeishu.icns", packaging / "assets/JevFeishu.icns")
             shutil.copyfile(root / "LICENSE", project / "LICENSE")
             (packaging / "launcher.rs").write_text("fn main() {}\n")
             (project / "src/jev_feishu").mkdir(parents=True)
@@ -39,7 +42,7 @@ class PackagingTests(unittest.TestCase):
                           "    stream.write(json.dumps(sys.argv[1:]) + '\\n')\n"
                           f"if sys.argv[1] == 'run': print({str(runtime)!r})\n")
             uv.chmod(0o755)
-            output = project / "dist/Jev 飞书助手.app"
+            output = project / "dist/build.noindex/Jev 飞书助手.app"
             for name in ("rsync", "xattr"):
                 command = commands / name
                 command.write_text(
@@ -69,6 +72,10 @@ class PackagingTests(unittest.TestCase):
             self.assertTrue((output / "Contents/MacOS/JevFeishu").is_file())
             self.assertEqual((output / "Contents/Resources/LICENSE").read_bytes(),
                              (root / "LICENSE").read_bytes())
+            metadata = plistlib.loads((output / "Contents/Info.plist").read_bytes())
+            icon = output / "Contents/Resources" / metadata["CFBundleIconFile"]
+            self.assertEqual(icon.read_bytes(), (root / "packaging/assets/JevFeishu.icns").read_bytes())
+            self.assertTrue(icon.read_bytes().startswith(b"icns"))
             clean_copy = folder / "install-preview/Jev 飞书助手.app"
             clean_copy.parent.mkdir()
             subprocess.run([shutil.which("rsync"), "-a", str(output) + "/", str(clean_copy) + "/"],

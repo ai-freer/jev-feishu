@@ -132,17 +132,13 @@ def _mac_surface(workspace=None):
                     return True
         return False
 
-    def complete_header_scope(title_node, title_branch):
+    def complete_header_scope(title_node, title_branch, header):
         # Only this fully read desktop header gives an empty badge slot meaning.
         # A missing marker in an arbitrary or truncated AX tree is still unknown.
         if title_branch is None or read(title_branch, AX.kAXRoleAttribute) != "AXGroup":
             return None
-        children = read(title_branch, AX.kAXChildrenAttribute)
-        if children is None or not 6 <= len(children) <= 7 or children[0] != title_node:
-            return None
-
-        def subtree(node, depth=0):
-            if depth > 4:
+        def subtree(node, depth=0, max_depth=4):
+            if depth > max_depth:
                 return None
             role = read(node, AX.kAXRoleAttribute)
             if role not in ("AXGroup", "AXStaticText", "AXButton", "AXImage"):
@@ -164,13 +160,47 @@ def _mac_surface(workspace=None):
             if role == "AXStaticText" and not isinstance(rows[0][1], str):
                 return None
             for child in nested or ():
-                result = subtree(child, depth + 1)
+                result = subtree(child, depth + 1, max_depth)
                 if result is None:
                     return None
                 rows.extend(result)
                 if len(rows) > 80:
                     return None
             return rows
+
+        def texts(part):
+            return [row[1] for row in part if row[0] == "AXStaticText"]
+
+        def toolbar_matches(part):
+            return (part[0][0] == "AXGroup" and not texts(part)
+                    and sum(row[0] == "AXButton" for row in part) >= 3
+                    and any(row[0] == "AXButton" and "doubao avatar" in row[2:] for row in part))
+
+        # Native AX retains wrappers that higher-level accessibility snapshots
+        # flatten away. The badge is a separate slot beside the title wrapper.
+        native = read(header, AX.kAXChildrenAttribute) if header is not None else None
+        if (native is not None and len(native) == 5 and native[1] == title_branch
+                and read(header, AX.kAXRoleAttribute) == "AXGroup"):
+            parts = [subtree(child, max_depth=8) for child in native]
+            if any(part is None for part in parts):
+                return None
+            placeholder, title_part, badge_part, toolbar, navigation = parts
+            if (any(row[0] not in ("AXGroup", "AXImage") for row in placeholder)
+                    or texts(title_part) != [read(title_node, AX.kAXValueAttribute)]
+                    or any(row[0] not in ("AXGroup", "AXStaticText") for row in title_part)
+                    or not toolbar_matches(toolbar)
+                    or texts(navigation) != ["消息", "云文档", "文件"]
+                    or sum(row[0] == "AXImage" for row in navigation) < 3
+                    or any(row[0] not in ("AXGroup", "AXStaticText", "AXImage") for row in navigation)):
+                return None
+            if texts(badge_part) == ["外部"]:
+                return True
+            # No label is meaningful only in this confirmed, fully read slot.
+            return False if all(row[0] == "AXGroup" for row in badge_part) else None
+
+        children = read(title_branch, AX.kAXChildrenAttribute)
+        if children is None or not 6 <= len(children) <= 7 or children[0] != title_node:
+            return None
 
         parts = [subtree(child) for child in children[1:]]
         if any(part is None for part in parts):
@@ -182,11 +212,7 @@ def _mac_surface(workspace=None):
         if len(children) != 6:
             return None
         toolbar, *tabs, trailing = parts
-        if (read(children[1], AX.kAXRoleAttribute) != "AXGroup"
-                or any(row[0] == "AXStaticText" for row in toolbar)
-                or sum(row[0] == "AXButton" for row in toolbar) < 3
-                or not any(row[0] == "AXButton" and "doubao avatar" in row[2:]
-                           for row in toolbar)):
+        if not toolbar_matches(toolbar):
             return None
         for part, caption in zip(tabs, ("消息", "云文档", "文件")):
             if (part[0][0] != "AXGroup"
@@ -209,7 +235,7 @@ def _mac_surface(workspace=None):
                 if has_external_badge(header, parent):
                     external = True
                 else:
-                    external = complete_header_scope(node, parent)
+                    external = complete_header_scope(node, parent, header)
         elif role == "AXTextArea":
             recipient_value = read(node, AX.kAXValueAttribute)
     matched = bool(title and isinstance(recipient_value, str)

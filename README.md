@@ -20,7 +20,7 @@ bash packaging/install_app.sh
 open "/Applications/Jev 飞书助手.app"
 ```
 
-构建脚本在系统临时目录生成并签名独立应用，内置 Python 运行时，再发布到项目 `dist/` 并对发布产物的干净副本做严格签名复核；临时目录自动清理。当本机恰有一个 Apple Development 签名身份时自动使用，以保持应用的系统权限身份稳定。没有可用身份时退回临时本机签名；有多个身份时须设置 `JEV_FEISHU_SIGN_IDENTITY` 指定证书。
+构建脚本在系统临时目录生成并签名独立应用，内置 Python 运行时，再发布到项目 `dist/build.noindex/` 并对发布产物的干净副本做严格签名复核；临时目录自动清理。构建副本放在 `.noindex` 目录，避免与 `/Applications` 中的正式应用一起出现在 Spotlight 搜索中。当本机恰有一个 Apple Development 签名身份时自动使用，以保持应用的系统权限身份稳定。没有可用身份时退回临时本机签名；有多个身份时须设置 `JEV_FEISHU_SIGN_IDENTITY` 指定证书。
 
 当前项目位于受 macOS 文件提供者管理的 `Documents` 目录，系统可能给发布后的包重新附加 Finder 信息，使原位置的直接签名复核失败；安装脚本会复制到 `/Applications`、清理属性并再次严格验证。只使用 `/Applications/Jev 飞书助手.app` 进行日常运行和验收。
 

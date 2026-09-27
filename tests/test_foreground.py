@@ -51,7 +51,7 @@ class ForegroundTests(unittest.TestCase):
         probe = ForegroundProbe(lambda: next(surfaces))
         self.assertEqual([probe.observe().epoch for _ in range(3)], [1, 2, 3])
 
-    def desktop_surface(self, *, marker=None, mutate=None, body_marker=False, ax_error=False):
+    def desktop_surface(self, *, marker=None, mutate=None, body_marker=False, ax_error=False, native=False):
         import ApplicationServices as AX
 
         def node(role, value=None, children=None, description=None):
@@ -68,6 +68,25 @@ class ForegroundTests(unittest.TestCase):
             for caption in ("消息", "云文档", "文件")], node("AXImage")])
         if marker is not None:
             header[AX.kAXChildrenAttribute].insert(1, node("AXGroup", children=[node("AXStaticText", marker)]))
+        if native:
+            def wrap(child, levels=1):
+                for _ in range(levels):
+                    child = node("AXGroup", children=[child])
+                return child
+            buttons = [wrap(node("AXButton", children=[node("AXImage", children=[])])) for _ in range(5)]
+            buttons[0][AX.kAXChildrenAttribute][0][AX.kAXTitleAttribute] = "doubao avatar"
+            buttons.append(node("AXGroup", children=[
+                wrap(node("AXButton", children=[node("AXImage", children=[])]), 3),
+                wrap(node("AXButton", children=[node("AXImage", children=[])]), 3),
+            ]))
+            tabs = [node("AXGroup", children=[node("AXImage", children=[]), wrap(node("AXStaticText", caption, children=[]))])
+                    for caption in ("消息", "云文档", "文件")]
+            tabs.extend(wrap(node("AXImage", children=[]), 2) for _ in range(2))
+            badge = node("AXGroup", children=[]) if marker is None else node("AXStaticText", marker, children=[])
+            header = node("AXGroup", children=[
+                wrap(node("AXGroup", children=[]), 3), wrap(title), wrap(badge),
+                wrap(node("AXGroup", children=buttons)), node("AXGroup", children=tabs),
+            ])
         if mutate:
             mutate(header)
         pane = node("AXWebArea", children=[
@@ -97,6 +116,27 @@ class ForegroundTests(unittest.TestCase):
         self.assertIs(self.desktop_surface()[-1], False)
         self.assertIs(self.desktop_surface(marker="外部")[-1], True)
         self.assertIs(self.desktop_surface(body_marker=True)[-1], False)
+
+    def test_native_wrapped_header_distinguishes_internal_and_external(self):
+        self.assertIs(self.desktop_surface(native=True)[-1], False)
+        self.assertIs(self.desktop_surface(native=True, marker="外部")[-1], True)
+        self.assertIs(self.desktop_surface(native=True, body_marker=True)[-1], False)
+
+    def test_native_header_missing_badge_slot_or_read_failure_remains_unknown(self):
+        import ApplicationServices as AX
+        children = AX.kAXChildrenAttribute
+        for mutate in (lambda h: h[children][2].update({children: None}),
+                       lambda h: h[children].pop(2),
+                       lambda h: h[children][4][children].pop(1)):
+            self.assertIsNone(self.desktop_surface(native=True, mutate=mutate)[-1])
+        self.assertIsNone(self.desktop_surface(native=True, marker="未知徽标")[-1])
+        self.assertIsNone(self.desktop_surface(native=True, ax_error=True)[-1])
+        def deeper_than_supported(header):
+            toolbar = header[children][3]
+            for _ in range(9):
+                toolbar = {AX.kAXRoleAttribute: "AXGroup", children: [toolbar]}
+            header[children][3] = toolbar
+        self.assertIsNone(self.desktop_surface(native=True, mutate=deeper_than_supported)[-1])
 
     def test_complete_header_and_api_scope_resolve_internal_external_namesakes(self):
         import json

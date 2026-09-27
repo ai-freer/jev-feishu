@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <title>Jev Feishu — original conversation and J mark</title>
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#357aff"/><stop offset="1" stop-color="#2347bb"/></linearGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="125%"><feDropShadow dx="0" dy="12" stdDeviation="11" flood-color="#102a69" flood-opacity=".24"/></filter>
+  </defs>
+  <rect x="64" y="64" width="896" height="896" rx="204" fill="url(#tile)" stroke="#fff" stroke-opacity=".18" stroke-width="2" filter="url(#shadow)"/>
+  <path d="M 330 250 L 694 250 C 758 250 808 300 808 364 L 808 620 C 808 684 758 734 694 734 L 443 734 L 337 812 L 337 734 L 330 734 C 266 734 216 684 216 620 L 216 364 C 216 300 266 250 330 250 Z" fill="#fff"/>
+  <path d="M 537 392 L 654 392 M 597 392 L 597 541 C 597 601 563 637 510 637 C 466 637 434 615 417 580" fill="none" stroke="#2253c4" stroke-width="66" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="389" cy="392" r="35" fill="#28c0a8"/>
+</svg>
