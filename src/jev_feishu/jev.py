@@ -1,9 +1,9 @@
 """TypeSafe Jev judgement, gated globally before any request."""
 
 from dataclasses import dataclass
-from urllib.parse import urlparse
 
 from .http_client import ModelError, post_json
+from .model_services import service_endpoint, validate_key, validate_model
 from .privacy import PrivacyGate
 from .session import AnalysisInput
 
@@ -33,24 +33,15 @@ class Verdict:
 
 
 def endpoint(base: str) -> str:
-    value = base.rstrip("/")
-    parsed = urlparse(value)
-    if (parsed.scheme != "https" or not parsed.netloc or parsed.username or parsed.password
-            or parsed.query or parsed.fragment):
-        raise ValueError("invalid_typesafe_url")
-    if value.endswith(("/systemone", "/evaluate", "/decisions")):
-        return value
-    if value.endswith("/v1"):
-        return value + "/systemone"
-    return value + "/v1/systemone"
+    return service_endpoint("jev", base)
 
 
 class JevJudge:
     def __init__(self, base: str, key: str, model: str, gate: PrivacyGate,
                  transport=post_json):
         self._url = endpoint(base)
-        self._key = key
-        self._model = model
+        self._key = validate_key(key)
+        self._model = validate_model(model)
         self._gate = gate
         self._transport = transport
 

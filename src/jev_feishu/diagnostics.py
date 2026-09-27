@@ -7,6 +7,7 @@ from time import monotonic
 
 from .cli_path import lark_cli_env, lark_cli_path
 from .http_client import ModelError, get_json, post_json
+from .model_services import PROVIDERS, reply_options, service_endpoint, validate_model
 from .jev import JevJudge, endpoint
 from .privacy import PrivacyGate
 from .replies import ReplyGenerator
@@ -22,6 +23,7 @@ STATUS_LABELS = {
     "unauthorized": "认证失败", "rate_limited": "请求受限",
     "thinking_only": "只返回思考内容", "insufficient_candidates": "候选数量不足",
     "internal_error": "检查失败", "unchecked": "尚未检查",
+    "verification_failed": "联网校验未通过，请重试",
 }
 
 
@@ -36,7 +38,7 @@ class DependencyReport:
 
     def summary(self) -> str:
         rows = (("飞书 CLI", self.cli), ("飞书用户授权", self.auth),
-                ("Ollama", self.ollama), ("Jev", self.jev))
+                ("回复服务", self.ollama), ("Jev", self.jev))
         return "\n".join(f"{name}：{STATUS_LABELS.get(status, '检查失败')}" for name, status in rows)
 
 
@@ -68,7 +70,9 @@ class Diagnostics:
             cloud_url = endpoint(self._config["typesafe_base"])
         except ValueError:
             cloud_url = "配置地址无效"
-        return (f"本机回复地址：{self._config['ollama_base']}\n"
+        options = reply_options(self._config)
+        return (f"当前回复接口：{PROVIDERS[options['provider']]}\n"
+                f"当前回复地址：{options['base']}\n"
                 f"当前回复模型：{model}\n"
                 f"Jev 地址：{cloud_url}\n"
                 f"Jev 模型：{self._config['typesafe_model']}\n"
@@ -81,30 +85,41 @@ class Diagnostics:
             binary = self._cli_lookup()
             cli = "ready"
             response = self._runner([binary, "auth", "status", "--json", "--verify"],
-                shell=False, capture_output=True, text=True, timeout=15,
+                shell=False, capture_output=True, text=True, timeout=30,
                 env=lark_cli_env(binary))
             data = json.loads(response.stdout)
             user = data["identities"]["user"]
-            value = user["openId"]
+            value = user.get("openId")
             if (response.returncode == 0 and data.get("verified") is True
                     and user.get("status") == "ready" and isinstance(value, str)
                     and value.startswith("ou_")):
                 own_id, auth = value, "ready"
-        except (OSError, subprocess.TimeoutExpired, ValueError, TypeError, KeyError):
-            pass
+            elif user.get("status") == "verify_failed":
+                auth = "verification_failed"
+        except subprocess.TimeoutExpired:
+            auth = "connection_error"
+        except (ValueError, TypeError, KeyError, AttributeError):
+            auth = "invalid_response"
+        except OSError:
+            if cli == "ready":
+                auth = "internal_error"
         models = ()
+        options = reply_options(self._config)
         try:
-            # Inventory only: no model prompt or chat content is sent at startup.
-            data = self._get(self._config["ollama_base"].rstrip("/") + "/models", 5)
-            entries = data["data"]
-            if not isinstance(entries, list):
-                raise ModelError("invalid_response")
-            models = tuple(model for model in ("qwen3.5:4b", "qwen3.5:9b")
-                           if any(isinstance(entry, dict) and entry.get("id") == model for entry in entries))
-            ollama = "ready" if self._config["reply_model"] in models else "model_missing"
+            if options["provider"] == "ollama":
+                # Startup inventories only the local service; no remote discovery or inference.
+                url = service_endpoint("ollama", options["base"]).removesuffix("/chat/completions") + "/models"
+                data = self._get(url, 5)
+                entries = data["data"]
+                if not isinstance(entries, list):
+                    raise ModelError("invalid_response")
+                models = tuple(dict.fromkeys(validate_model(entry["id"]) for entry in entries))
+                ollama = "ready" if self._config["reply_model"] in models else "model_missing"
+            else:
+                ollama = "configured" if options["key"] else "not_configured"
         except ModelError as error:
             ollama = str(error) if str(error) in STATUS_LABELS else "internal_error"
-        except (KeyError, TypeError):
+        except (KeyError, TypeError, ValueError):
             ollama = "invalid_response"
         return DependencyReport(cli, auth, ollama,
             "configured" if self._config["typesafe_key"] else "not_configured", models, own_id)
@@ -125,7 +140,7 @@ class Diagnostics:
                 JevJudge(self._config["typesafe_base"], self._config["typesafe_key"], model,
                          gate, self._post).judge(item)
             else:
-                count = len(ReplyGenerator(self._config["ollama_base"], self._post).generate(item, model))
+                count = len(ReplyGenerator(transport=self._post, **reply_options(self._config)).generate(item, model))
         except ModelError as error:
             status = str(error) if str(error) in STATUS_LABELS else "internal_error"
         except (OSError, ValueError, TypeError):

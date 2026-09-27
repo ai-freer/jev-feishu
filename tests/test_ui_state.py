@@ -17,10 +17,10 @@ REF = ChatRef("chat", "oc_fake")
 
 
 class ImmediateExecutor:
-    def submit(self, fn, *args):
+    def submit(self, fn, *args, **kwargs):
         future = Future()
         try:
-            future.set_result(fn(*args))
+            future.set_result(fn(*args, **kwargs))
         except Exception as error:
             future.set_exception(error)
         return future
@@ -73,7 +73,7 @@ class RuntimeTests(unittest.TestCase):
                                       "reply_model": "qwen3.5:4b", "typesafe_base": "https://openrouter.ai/api",
                                       "typesafe_key": "", "typesafe_model": "~typesafe/jev-latest",
                                       "ollama_base": "http://127.0.0.1:11434/v1",
-                                  }, save_jev_setting=Mock())
+                                  }, save_jev_setting=Mock(), save_tones=Mock())
 
     def test_default_pause_and_verified_current_chat(self):
         self.assertEqual(self.runtime.display().status, "paused")
@@ -86,6 +86,8 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(state.status, "ready")
         self.assertEqual(state.chat_title, "虚构对象")
         self.assertEqual(len(state.result.replies), 6)
+        self.assertEqual(state.result.source_text, "虚构测试消息")
+        self.assertNotIn("虚构测试消息", repr(state.result))
         self.assertTrue(state.cloud_enabled)
 
     def test_switch_clears_and_does_not_read_unknown_chat(self):
@@ -283,15 +285,55 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(runtime.display().status, "lark_auth_unavailable")
         self.assertIsNone(runtime.display().chat_title)
         self.reader.list_recent.assert_not_called()
+        runtime.pause()
+        self.assertEqual(runtime.display().status, "lark_auth_unavailable")
+        self.assertTrue(runtime.can_recheck)
 
         diagnostics.check.return_value = DependencyReport("ready", "ready", "ready", "configured",
                                                          own_id="ou_self")
         runtime.refresh_dependencies()
+        runtime.pause()
+        self.assertEqual(runtime.display().status, "checking_dependencies")
+        self.assertFalse(runtime.can_recheck)
         executor.complete_next()
         runtime.pulse()
         self.assertEqual(runtime.display().status, "paused")
+        self.assertFalse(runtime._running)
+        self.reader.list_recent.assert_not_called()
         runtime.start()
         self.assertTrue(runtime._running)
+
+    def test_failed_checks_remain_visible_when_paused_and_can_be_retried(self):
+        for cli, auth, status in (("ready", "connection_error", "lark_check_failed"),
+                                  ("ready", "verification_failed", "lark_check_failed"),
+                                  ("missing", "unavailable", "lark_cli_missing")):
+            with self.subTest(auth=auth, cli=cli):
+                diagnostics = Mock()
+                diagnostics.check.return_value = DependencyReport(cli, auth, "ready", "configured")
+                runtime = AppRuntime(reader=self.reader, executor=ImmediateExecutor(),
+                                     config=self.runtime._config, diagnostics=diagnostics)
+                self.addCleanup(runtime.close)
+                runtime.pulse()
+                self.assertEqual(runtime.display().status, status)
+                runtime.pause()
+                self.assertEqual(runtime.display().status, status)
+                self.assertTrue(runtime.can_recheck)
+                self.assertFalse(runtime.can_start)
+                runtime.start()
+                self.assertFalse(runtime._running)
+                self.reader.list_recent.assert_not_called()
+
+    def test_unverified_report_with_cached_identity_cannot_enable_start(self):
+        diagnostics = Mock()
+        diagnostics.check.return_value = DependencyReport("ready", "verification_failed", "ready", "configured",
+                                                         own_id="ou_fixture")
+        runtime = AppRuntime(reader=self.reader, executor=ImmediateExecutor(),
+                             config=self.runtime._config, diagnostics=diagnostics)
+        self.addCleanup(runtime.close)
+        runtime.pulse()
+        self.assertFalse(runtime.can_start)
+        self.assertEqual(runtime.display().status, "lark_check_failed")
+        self.reader.list_recent.assert_not_called()
 
     def test_new_chat_clears_old_reply_before_identity_lookup_finishes(self):
         self.runtime.start()
@@ -331,6 +373,42 @@ class RuntimeTests(unittest.TestCase):
         self.runtime.pulse()
         self.assertEqual(self.runtime.display().result.replies[0], "qwen3.5:9b")
 
+    def test_tone_change_regenerates_with_selected_snapshot(self):
+        self.generator.generate.side_effect = lambda item, model, **kwargs: list(kwargs["tones"]) * 2
+        self.runtime.start()
+        self.runtime.pulse()
+        self.runtime.pulse()
+        self.assertEqual(self.runtime.display().result.replies[1], "高情商协作")
+        self.assertTrue(self.runtime.set_tone(1, "高情商拒绝加班"))
+        self.assertIsNone(self.runtime.display().result)
+        self.runtime.pulse()
+        self.runtime.pulse()
+        self.assertEqual(self.runtime.display().tones[1], "高情商拒绝加班")
+        self.assertEqual(self.runtime.display().result.replies[1], "高情商拒绝加班")
+        self.runtime._save_tones.assert_called_once_with(
+            ("专业直接", "高情商拒绝加班", "轻松同事"))
+
+    def test_invalid_or_failed_tone_change_preserves_state(self):
+        before = self.runtime.display().tones
+        self.assertFalse(self.runtime.set_tone(3, "高情商拒绝加班"))
+        self.assertFalse(self.runtime.set_tone(1, "unknown"))
+        self.runtime._save_tones.side_effect = OSError("private path")
+        self.assertFalse(self.runtime.set_tone(1, "高情商拒绝加班"))
+        self.assertEqual(self.runtime.display().tones, before)
+
+    def test_focus_return_keeps_tone_choice_until_verified_read(self):
+        self.runtime.start()
+        self.runtime.pulse()
+        self.runtime.pulse()
+        self.runtime.set_overlay_focused(True)
+        self.assertTrue(self.runtime.set_tone(1, "高情商拒绝加班"))
+        self.runtime.set_overlay_focused(False)
+        self.runtime.pulse()
+        self.runtime.pulse()
+        self.assertEqual(self.runtime.display().tones[1], "高情商拒绝加班")
+        self.assertEqual(self.generator.generate.call_args.kwargs["tones"],
+                         ("专业直接", "高情商拒绝加班", "轻松同事"))
+
     def test_cloud_change_rejudges_current_message_and_discards_old_verdict(self):
         def transport(url, headers, payload, timeout):
             return {"answers": {"intent": {"choice": "闲聊", "confidence": 0.8}, "risk": {"score": 0}}}
@@ -367,6 +445,7 @@ class RuntimeTests(unittest.TestCase):
     def test_closed_runtime_cannot_resume_or_launch_diagnostics(self):
         self.runtime.close()
         self.assertFalse(self.runtime.can_start)
+        self.assertFalse(self.runtime.can_recheck)
         self.runtime.start()
         self.runtime.refresh_dependencies()
         self.runtime.test_connection("jev")

@@ -68,13 +68,15 @@ class LarkIdentityLookup:
                        if user.get("localized_name") == title]
         exact_groups = [chat for chat in group_rows
                         if chat.get("name") == title]
-        if observation.external is True:
+        if observation.external is not None:
             # Missing flags must not silently remove a possible namesake.
             if (any(type(user.get("is_cross_tenant")) is not bool for user in exact_users)
                     or any(type(chat.get("external")) is not bool for chat in exact_groups)):
                 return observation
-            exact_users = [user for user in exact_users if user["is_cross_tenant"]]
-            exact_groups = [chat for chat in exact_groups if chat["external"]]
+            exact_users = [user for user in exact_users
+                           if user["is_cross_tenant"] is observation.external]
+            exact_groups = [chat for chat in exact_groups
+                            if chat["external"] is observation.external]
         refs = []
         for user in exact_users:
             if user.get("p2p_chat_id"):

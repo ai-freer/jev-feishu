@@ -179,6 +179,39 @@ class IdentityLookupTests(unittest.TestCase):
         ])
         self.assertIsNone(ChatResolver().resolve(LarkIdentityLookup(runner).candidates(observed())))
 
+    def test_complete_internal_header_disambiguates_external_namesake(self):
+        runner = Mock(side_effect=[
+            envelope(users=[
+                {"localized_name": "虚构对象", "p2p_chat_id": "oc_inside", "is_cross_tenant": False},
+                {"localized_name": "虚构对象", "p2p_chat_id": "oc_outside", "is_cross_tenant": True},
+            ], has_more=False),
+            envelope(chats=None, has_more=False),
+        ])
+        result = LarkIdentityLookup(runner).candidates(replace(observed(), external=False))
+        self.assertEqual(ChatResolver().resolve(result), ChatRef("chat", "oc_inside"))
+
+    def test_internal_scope_never_bypasses_ambiguity_unknown_flags_or_pagination(self):
+        base = {"localized_name": "虚构对象", "p2p_chat_id": "oc_inside", "is_cross_tenant": False}
+        for flag in (None, "false", "true", 0, 1, False):
+            with self.subTest(flag=flag):
+                runner = Mock(side_effect=[
+                    envelope(users=[base, {"localized_name": "虚构对象", "p2p_chat_id": "oc_other",
+                                           "is_cross_tenant": flag}], has_more=False),
+                    envelope(chats=[], has_more=False),
+                ])
+                result = LarkIdentityLookup(runner).candidates(replace(observed(), external=False))
+                self.assertIsNone(ChatResolver().resolve(result))
+        for flag in (False, None):
+            with self.subTest(group_flag=flag):
+                runner = Mock(side_effect=[envelope(users=[base], has_more=False), envelope(chats=[
+                    {"name": "虚构对象", "chat_mode": "DEFAULT", "chat_id": "oc_group", "external": flag}
+                ], has_more=False)])
+                result = LarkIdentityLookup(runner).candidates(replace(observed(), external=False))
+                self.assertIsNone(ChatResolver().resolve(result))
+        runner = Mock(side_effect=[envelope(users=[base], has_more=True), envelope(chats=[], has_more=False)])
+        result = LarkIdentityLookup(runner).candidates(replace(observed(), external=False))
+        self.assertIsNone(ChatResolver().resolve(result))
+
     def test_unknown_group_flag_cannot_remove_an_exact_namesake(self):
         runner = Mock(side_effect=[
             envelope(users=[{"localized_name": "虚构对象", "p2p_chat_id": "oc_person", "is_cross_tenant": True}], has_more=False),

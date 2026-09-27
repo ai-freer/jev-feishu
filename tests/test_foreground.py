@@ -42,6 +42,112 @@ class ForegroundTests(unittest.TestCase):
         self.assertEqual([item.epoch for item in observations], [1, 2, 2])
         self.assertEqual([item.external for item in observations], [None, True, True])
 
+    def test_internal_external_same_title_changes_observation_epoch(self):
+        surfaces = iter([
+            ("com.electron.lark", "chat", 1, "虚构对象", True, False),
+            ("com.electron.lark", "chat", 1, "虚构对象", True, True),
+            ("com.electron.lark", "chat", 1, "虚构对象", True, None),
+        ])
+        probe = ForegroundProbe(lambda: next(surfaces))
+        self.assertEqual([probe.observe().epoch for _ in range(3)], [1, 2, 3])
+
+    def desktop_surface(self, *, marker=None, mutate=None, body_marker=False, ax_error=False):
+        import ApplicationServices as AX
+
+        def node(role, value=None, children=None, description=None):
+            return {AX.kAXRoleAttribute: role, AX.kAXValueAttribute: value,
+                    AX.kAXChildrenAttribute: children, AX.kAXDescriptionAttribute: description}
+
+        toolbar = node("AXGroup", children=[
+            node("AXButton", description="doubao avatar", children=[node("AXImage")]),
+            node("AXButton", children=[node("AXImage")]), node("AXButton", children=[node("AXImage")]),
+        ])
+        title = node("AXStaticText", "虚构对象")
+        header = node("AXGroup", children=[title, toolbar, *[
+            node("AXGroup", children=[node("AXImage"), node("AXStaticText", caption)])
+            for caption in ("消息", "云文档", "文件")], node("AXImage")])
+        if marker is not None:
+            header[AX.kAXChildrenAttribute].insert(1, node("AXGroup", children=[node("AXStaticText", marker)]))
+        if mutate:
+            mutate(header)
+        pane = node("AXWebArea", children=[
+            node("AXGroup", children=[header]),
+            node("AXGroup", children=[node("AXStaticText", "外部" if body_marker else "虚构正文")]),
+            node("AXTextArea", "发送给 虚构对象"),
+        ])
+        pane[AX.kAXTitleAttribute] = "messenger-chat"
+        window = node("AXWindow", children=[pane])
+        window.update({AX.kAXSubroleAttribute: "AXStandardWindow", AX.kAXMinimizedAttribute: False,
+                       AX.kAXMainAttribute: True})
+        root = {AX.kAXWindowsAttribute: [window]}
+        def read(node, key, _):
+            if ax_error and node is header[children_key][-1] and key == AX.kAXChildrenAttribute:
+                return AX.kAXErrorCannotComplete, None
+            return 0, node.get(key)
+        children_key = AX.kAXChildrenAttribute
+        workspace = Mock()
+        workspace.frontmostApplication.return_value.bundleIdentifier.return_value = "com.electron.lark"
+        with patch.object(AX, "AXIsProcessTrusted", return_value=True), \
+             patch.object(AX, "AXUIElementCreateApplication", return_value=root), \
+             patch.object(AX, "AXUIElementSetMessagingTimeout"), \
+             patch.object(AX, "AXUIElementCopyAttributeValue", side_effect=read):
+            return _mac_surface(workspace)
+
+    def test_complete_desktop_header_distinguishes_internal_and_external(self):
+        self.assertIs(self.desktop_surface()[-1], False)
+        self.assertIs(self.desktop_surface(marker="外部")[-1], True)
+        self.assertIs(self.desktop_surface(body_marker=True)[-1], False)
+
+    def test_complete_header_and_api_scope_resolve_internal_external_namesakes(self):
+        import json
+        import subprocess
+        from src.jev_feishu.chat_resolver import ChatResolver, LarkIdentityLookup
+        from src.jev_feishu.types import ChatRef
+
+        def result(**data):
+            return subprocess.CompletedProcess([], 0, json.dumps({"ok": True, "data": data}), "")
+
+        for marker, expected in ((None, "oc_internal"), ("外部", "oc_external")):
+            with self.subTest(marker=marker):
+                observation = ForegroundProbe(lambda: self.desktop_surface(marker=marker)).observe()
+                runner = Mock(side_effect=[result(users=[
+                    {"localized_name": "虚构对象", "p2p_chat_id": "oc_internal", "is_cross_tenant": False},
+                    {"localized_name": "虚构对象", "p2p_chat_id": "oc_external", "is_cross_tenant": True},
+                ], has_more=False), result(chats=None, has_more=False)])
+                self.assertEqual(ChatResolver().resolve(LarkIdentityLookup(runner).candidates(observation)),
+                                 ChatRef("chat", expected))
+
+    def test_unknown_or_incomplete_header_is_not_internal_evidence(self):
+        import ApplicationServices as AX
+        children = AX.kAXChildrenAttribute
+        cases = (
+            lambda h: h[children].pop(),
+            lambda h: h[children][1].update({children: None}),
+            lambda h: h[children][2].update({children: None}),
+            lambda h: h[children][2][children][1].update({AX.kAXValueAttribute: None}),
+            lambda h: h[children][1][children][0].update({AX.kAXDescriptionAttribute: "unknown"}),
+            lambda h: h[children][3][children][1].update({AX.kAXValueAttribute: "unknown tab"}),
+            lambda h: h[children].append({AX.kAXRoleAttribute: "AXGroup", children: []}),
+        )
+        for mutate in cases:
+            with self.subTest(mutate=mutate):
+                self.assertIsNone(self.desktop_surface(mutate=mutate)[-1])
+        self.assertIsNone(self.desktop_surface(marker="未知身份标记")[-1])
+        self.assertIsNone(self.desktop_surface(ax_error=True)[-1])
+
+    def test_oversized_and_deep_header_cannot_be_assumed_internal(self):
+        import ApplicationServices as AX
+        children = AX.kAXChildrenAttribute
+        def oversized(header):
+            header[children][1][children] *= 5
+        def too_deep(header):
+            part = header[children][1]
+            for _ in range(6):
+                part = {AX.kAXRoleAttribute: "AXGroup", children: [part]}
+            header[children][1] = part
+        for mutate in (oversized, too_deep):
+            self.assertIsNone(self.desktop_surface(mutate=mutate)[-1])
+
     def surface_with_badge(self, *, header_badge=False, body_badge=False, title="虚构对象"):
         import ApplicationServices as AX
 

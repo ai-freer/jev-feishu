@@ -132,6 +132,71 @@ def _mac_surface(workspace=None):
                     return True
         return False
 
+    def complete_header_scope(title_node, title_branch):
+        # Only this fully read desktop header gives an empty badge slot meaning.
+        # A missing marker in an arbitrary or truncated AX tree is still unknown.
+        if title_branch is None or read(title_branch, AX.kAXRoleAttribute) != "AXGroup":
+            return None
+        children = read(title_branch, AX.kAXChildrenAttribute)
+        if children is None or not 6 <= len(children) <= 7 or children[0] != title_node:
+            return None
+
+        def subtree(node, depth=0):
+            if depth > 4:
+                return None
+            role = read(node, AX.kAXRoleAttribute)
+            if role not in ("AXGroup", "AXStaticText", "AXButton", "AXImage"):
+                return None
+            try:
+                status, nested = AX.AXUIElementCopyAttributeValue(node, AX.kAXChildrenAttribute, None)
+            except Exception:
+                return None
+            if status != 0:
+                if status != AX.kAXErrorAttributeUnsupported or role == "AXGroup":
+                    return None
+                nested = None
+            if nested is None and role == "AXGroup":
+                return None
+            if nested is not None and len(nested) > 12:
+                return None
+            rows = [(role, read(node, AX.kAXValueAttribute), read(node, AX.kAXTitleAttribute),
+                     read(node, AX.kAXDescriptionAttribute))]
+            if role == "AXStaticText" and not isinstance(rows[0][1], str):
+                return None
+            for child in nested or ():
+                result = subtree(child, depth + 1)
+                if result is None:
+                    return None
+                rows.extend(result)
+                if len(rows) > 80:
+                    return None
+            return rows
+
+        parts = [subtree(child) for child in children[1:]]
+        if any(part is None for part in parts):
+            return None
+        badge = [part for part in parts if any(row[0] == "AXStaticText" and row[1] == "外部"
+                                              for row in part)]
+        if badge:
+            return True
+        if len(children) != 6:
+            return None
+        toolbar, *tabs, trailing = parts
+        if (read(children[1], AX.kAXRoleAttribute) != "AXGroup"
+                or any(row[0] == "AXStaticText" for row in toolbar)
+                or sum(row[0] == "AXButton" for row in toolbar) < 3
+                or not any(row[0] == "AXButton" and "doubao avatar" in row[2:]
+                           for row in toolbar)):
+            return None
+        for part, caption in zip(tabs, ("消息", "云文档", "文件")):
+            if (part[0][0] != "AXGroup"
+                    or [row[1] for row in part if row[0] == "AXStaticText"] != [caption]
+                    or not any(row[0] == "AXImage" for row in part)):
+                return None
+        if len(trailing) != 1 or trailing[0][0] != "AXImage":
+            return None
+        return False
+
     title = None
     external = None
     recipient_value = None
@@ -143,6 +208,8 @@ def _mac_surface(workspace=None):
                 title = value.strip()
                 if has_external_badge(header, parent):
                     external = True
+                else:
+                    external = complete_header_scope(node, parent)
         elif role == "AXTextArea":
             recipient_value = read(node, AX.kAXValueAttribute)
     matched = bool(title and isinstance(recipient_value, str)

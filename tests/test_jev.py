@@ -3,7 +3,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock
 
-from src.jev_feishu.config import init_app_config, load_config, save_jev_enabled
+from src.jev_feishu.config import init_app_config, load_config, read_env, save_jev_enabled, save_reply_tones
+from src.jev_feishu.replies import DEFAULT_TONES
 from src.jev_feishu.http_client import ModelError
 from src.jev_feishu.jev import JevJudge, endpoint
 from src.jev_feishu.privacy import PrivacyGate
@@ -79,6 +80,7 @@ class JevTests(unittest.TestCase):
             config = load_config(app, cloud)
             self.assertEqual(config["typesafe_model"], "~typesafe/jev-latest")
             self.assertEqual(config["reply_model"], "qwen3.5:4b")
+            self.assertEqual(config["reply_tones"], DEFAULT_TONES)
             self.assertTrue(config["jev_enabled"])
             self.assertNotIn("TYPESAFE_API_KEY", app.read_text())
 
@@ -93,6 +95,14 @@ class JevTests(unittest.TestCase):
             self.assertTrue(load_config(app, cloud)["jev_enabled"])
             self.assertEqual(app.read_text().count("JEV_FEISHU_JEV_ENABLED="), 1)
 
+            selected = ("这事我负责", "霸道总裁", "专业对客")
+            save_reply_tones(selected, app)
+            self.assertEqual(load_config(app, cloud)["reply_tones"], selected)
+            self.assertEqual(app.stat().st_mode & 0o777, 0o600)
+            self.assertIn("CUSTOM_SETTING='untouched value'", app.read_text())
+            save_reply_tones(DEFAULT_TONES, app)
+            self.assertEqual(app.read_text().count("JEV_FEISHU_REPLY_TONES="), 1)
+
             app.write_text("JEV_FEISHU_REPLY_MODEL=qwen3.5:4b\n")
             self.assertTrue(load_config(app, cloud)["jev_enabled"])
 
@@ -105,3 +115,49 @@ class JevTests(unittest.TestCase):
                 load_config(app, Path(tmp) / "typesafe")
             with self.assertRaises(ValueError):
                 save_jev_enabled("false", app)
+
+    def test_invalid_reply_tones_rejected_without_overwriting_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            app = Path(tmp) / "app" / "env"
+            init_app_config(app)
+            before = app.read_bytes()
+            with self.assertRaisesRegex(ValueError, "invalid_reply_tones"):
+                save_reply_tones(("unknown", *DEFAULT_TONES[1:]), app)
+            self.assertEqual(app.read_bytes(), before)
+            with app.open("a") as stream:
+                stream.write("JEV_FEISHU_REPLY_TONES=unknown|贴吧老哥|稳如老狗\n")
+            with self.assertRaisesRegex(ValueError, "invalid_reply_tones"):
+                load_config(app, Path(tmp) / "typesafe")
+
+    def test_legacy_reply_modes_migrate_without_changing_unrelated_config(self):
+        mapping = {
+            "高情商话术": "高情商协作", "贴吧老哥": "轻松同事", "稳如老狗": "专业直接",
+            "拒绝加班": "高情商拒绝加班", "卑微乙方": "专业对客", "职场黑话": "向上同步",
+            "阴阳怪气": "职场嘴替", "简短直接": "专业直接",
+            "小组 Leader": "这事我负责",
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            app = Path(tmp) / "app" / "env"
+            cloud = Path(tmp) / "typesafe"
+            init_app_config(app)
+            for old, new in mapping.items():
+                with self.subTest(old=old):
+                    original = (f"JEV_FEISHU_REPLY_TONES='{old}|专业对客|轻松同事'\n"
+                                "# keep this comment\nCUSTOM_SETTING='untouched value'\n")
+                    app.write_text(original)
+                    self.assertEqual(load_config(app, cloud)["reply_tones"], (new, "专业对客", "轻松同事"))
+                    self.assertEqual(app.read_text(), original, "loading is read-only")
+                    save_reply_tones(load_config(app, cloud)["reply_tones"], app)
+                    self.assertEqual(read_env(app)["JEV_FEISHU_REPLY_TONES"], f"{new}|专业对客|轻松同事")
+                    self.assertIn("# keep this comment", app.read_text())
+                    self.assertIn("CUSTOM_SETTING='untouched value'", app.read_text())
+                    self.assertEqual(app.stat().st_mode & 0o777, 0o600)
+            app.write_text("JEV_FEISHU_REPLY_TONES=稳如老狗|简短直接|高情商话术\n")
+            self.assertEqual(load_config(app, cloud)["reply_tones"],
+                             ("专业直接", "专业直接", "高情商协作"))
+            app.write_text("JEV_FEISHU_REPLY_TONES='轻松同事|小组 Leader|小组 Leader'\n")
+            selected = load_config(app, cloud)["reply_tones"]
+            self.assertEqual(selected, ("轻松同事", "这事我负责", "这事我负责"))
+            save_reply_tones(selected, app)
+            self.assertNotIn("小组 Leader", app.read_text())
+            self.assertEqual(load_config(app, cloud)["reply_tones"], selected)

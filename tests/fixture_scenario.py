@@ -85,6 +85,8 @@ class FixtureScenario:
             return {"answers": {"intent": {"choice": "问进度", "confidence": 0.9}, "risk": {"score": 1}}}
         assert url == "http://127.0.0.1:11434/v1/chat/completions"
         assert payload["reasoning_effort"] == "none"
+        assert [message["role"] for message in payload["messages"]] == ["system", "user"]
+        assert json.loads(payload["messages"][1]["content"])["latest_message"].startswith("虚构")
         serial = len(self.model_calls)
         return {"choices": [{"message": {"content": f"虚构候选 {serial}：稍后给你进展。\n虚构候选 {serial}：今天整理后同步。"}}]}
 
@@ -100,7 +102,8 @@ class FixtureScenario:
             diagnostics=self.module("diagnostics").Diagnostics(self.config, runner=self.runner,
                 cli_lookup=lambda: "fixture-cli", post=self.transport,
                 get=lambda *args: {"data": [{"id": "qwen3.5:4b"}, {"id": "qwen3.5:9b"}]}),
-            executor=executor, config=self.config, save_jev_setting=lambda enabled: None)
+            executor=executor, config=self.config, save_jev_setting=lambda enabled: None,
+            save_tones=lambda tones: None)
 
     def close(self):
         self._patches.close()

@@ -6,15 +6,16 @@ from queue import Empty, SimpleQueue
 from time import monotonic
 
 from .chat_resolver import ChatResolver, LarkIdentityLookup
-from .config import load_config, save_jev_enabled
+from .config import load_config, save_jev_enabled, save_reply_tones
 from .diagnostics import Diagnostics, DependencyReport
 from .foreground import ForegroundProbe
 from .http_client import ModelError
+from .model_services import reply_options, validate_model
 from .jev import JevJudge, Verdict
 from .lark_reader import LarkReader
 from .privacy import PrivacyGate
-from .replies import ReplyGenerator
-from .session import AnalysisInput, SessionController
+from .replies import DEFAULT_TONES, TONES, ReplyGenerator, validate_tones
+from .session import AnalysisInput, SessionController, VersionStamp
 from .types import ChatRef
 
 
@@ -23,6 +24,8 @@ class ResultBundle:
     replies: tuple[str, ...]
     verdict: Verdict | None
     error: str | None = None
+    source_text: str = ""
+    stamp: VersionStamp | None = None
 
 
 @dataclass(frozen=True, repr=False)
@@ -32,25 +35,28 @@ class DisplayState:
     model: str
     cloud_enabled: bool
     result: ResultBundle | None
+    tones: tuple[str, str, str]
 
 
 class AppRuntime:
     def __init__(self, *, own_id=None, probe=None, lookup=None, reader=None,
                  gate=None, judge=None, generator=None, executor=None, config=None, diagnostics=None,
-                 save_jev_setting=save_jev_enabled):
+                 save_jev_setting=save_jev_enabled, save_tones=save_reply_tones):
         self._config = config or load_config()
         self._probe = probe or ForegroundProbe()
         self._lookup = lookup or LarkIdentityLookup()
         self._resolver = ChatResolver()
         self._gate = gate if gate is not None else PrivacyGate(self._config.get("jev_enabled", True))
         self._save_jev_setting = save_jev_setting
+        self._save_tones = save_tones
         self._reader = reader or LarkReader()
         self._session = SessionController(self._reader, own_id) if own_id else None
         self._judge = judge or JevJudge(self._config["typesafe_base"], self._config["typesafe_key"],
                                         self._config["typesafe_model"], self._gate)
-        self._generator = generator or ReplyGenerator(self._config["ollama_base"])
+        self._generator = generator or ReplyGenerator(**reply_options(self._config))
         self._pool = executor or ThreadPoolExecutor(max_workers=4, thread_name_prefix="jev-feishu")
         self._model = self._config["reply_model"]
+        self._tones = validate_tones(self._config.get("reply_tones", DEFAULT_TONES))
         self._running = False
         self._manual = False
         self._overlay_focused = False
@@ -65,6 +71,7 @@ class AppRuntime:
         self._read_future = None
         self._next_read_at = 0.0
         self._model_futures = []
+        self._tone_verdict: tuple[VersionStamp, Verdict] | None = None
         self._status = "paused"
         self._result: ResultBundle | None = None
         self._diagnostics = diagnostics or Diagnostics(self._config)
@@ -81,18 +88,28 @@ class AppRuntime:
         return not self._closed and self._session is not None and self._health_future is None
 
     @property
+    def can_recheck(self):
+        return not self._closed and self._session is None and not self.diagnostics_busy
+
+    @property
     def diagnostics_busy(self):
         return self._health_future is not None or self._test_future is not None
+
+    @property
+    def available_reply_models(self):
+        return tuple(dict.fromkeys((self._model, self._config["reply_model"], *self._health.available_models)))
+
+    @property
+    def reply_provider(self):
+        return self._config.get("reply_provider", "ollama")
 
     @property
     def current_ref(self) -> ChatRef | None:
         return self._session.current_ref if self._session is not None else None
 
     def settings_text(self):
-        return (self._diagnostics.configuration_text(self._model) + "\n\n"
-                + self._health.summary() + "\n可用回复模型："
-                + ("、".join(self._health.available_models) or "尚未检测到")
-                + "\n\n" + self._test_status)
+        return (self._diagnostics.configuration_text(self._model) + "\n"
+                + self._health.summary() + "\n" + self._test_status)
 
     @property
     def jev_enabled(self):
@@ -117,10 +134,10 @@ class AppRuntime:
             try:
                 self._health = future.result()
             except Exception:
-                self._health = DependencyReport("unchecked", "unavailable", "unchecked", "unchecked")
+                self._health = DependencyReport("unchecked", "internal_error", "unchecked", "unchecked")
             self._session = (SessionController(self._reader, self._health.own_id)
-                             if self._health.own_id else None)
-            self._status = "paused" if self._session else "lark_auth_unavailable"
+                             if self._health.auth == "ready" and self._health.own_id else None)
+            self._status = self._idle_status()
         if self._test_future is not None and self._test_future.done():
             future, self._test_future = self._test_future, None
             try:
@@ -151,11 +168,25 @@ class AppRuntime:
         self._resolved_ref = None
         self._title = None
         self._result = None
-        self._status = "paused"
+        self._status = self._idle_status()
         self._detect_future = None
         self._detect_token = None
         self._read_future = None
         self._model_futures = []
+        self._tone_verdict = None
+
+    def _idle_status(self) -> str:
+        if self._closed:
+            return "paused"
+        if self._health_future is not None:
+            return "checking_dependencies"
+        if self._session is not None:
+            return "paused"
+        if self._health.cli == "missing":
+            return "lark_cli_missing"
+        if self._health.auth == "unavailable":
+            return "lark_auth_unavailable"
+        return "lark_check_failed"
 
     def close(self):
         if self._closed:
@@ -179,13 +210,35 @@ class AppRuntime:
                 self._status = "looking_for_chat"
 
     def set_model(self, model: str):
-        if model not in ("qwen3.5:4b", "qwen3.5:9b"):
-            raise ValueError("unsupported_reply_model")
+        model = validate_model(model)
         if model != self._model:
             self._model = model
             self.retry_current()
 
+    def set_tone(self, index: int, tone: str) -> bool:
+        if (self._closed or type(index) is not int or not 0 <= index < 3
+                or type(tone) is not str or tone not in TONES):
+            return False
+        if self._tones[index] == tone:
+            return True
+        selected = list(self._tones)
+        selected[index] = tone
+        try:
+            selected_tones = validate_tones(selected)
+            self._save_tones(selected_tones)
+        except (OSError, ValueError):
+            return False
+        current = self._session.candidate if self._session is not None else None
+        reuse = ((current.stamp, current.verdict) if current and current.stamp and current.verdict
+                 else self._tone_verdict)
+        self._tones = selected_tones
+        self._config["reply_tones"] = selected_tones
+        if self.retry_current():
+            self._tone_verdict = reuse
+        return True
+
     def retry_current(self) -> bool:
+        self._tone_verdict = None
         if self._closed or self._session is None or not self._session.refresh_current():
             return False
         self._read_future = None
@@ -205,6 +258,7 @@ class AppRuntime:
         self._resolved_ref = ref
         self._title = ref.value
         self._result = None
+        self._tone_verdict = None
         self._status = "manual"
         self._detect_future = None
         self._detect_token = None
@@ -218,6 +272,7 @@ class AppRuntime:
         self._resolved_ref = None
         self._title = None
         self._result = None
+        self._tone_verdict = None
         self._observed_epoch = None
         self._status = "looking_for_chat"
         self._read_future = None
@@ -241,7 +296,7 @@ class AppRuntime:
     def display(self) -> DisplayState:
         ref = self._session.current_ref if self._session is not None else None
         return DisplayState(self._status, self._title if ref else None, self._model,
-                            self.jev_enabled, self._session.candidate if ref else None)
+                            self.jev_enabled, self._session.candidate if ref else None, self._tones)
 
     def pulse(self):
         if self._closed:
@@ -279,6 +334,8 @@ class AppRuntime:
                         self._resolved_ref = ref if stable else None
                         self._title = observation.title if ref is not None and stable else None
                         self._result = None
+                        if ref is None:
+                            self._tone_verdict = None
                         self._next_read_at = 0.0
                         if stable and looked_up and ref is None:
                             self._next_lookup_at = monotonic() + self._lookup_delay
@@ -297,6 +354,7 @@ class AppRuntime:
             try:
                 item, observed = future.result()
             except Exception:
+                self._tone_verdict = None
                 self._status = "read_error"
             else:
                 if self._session.current_ref and self._session.read_status:
@@ -314,9 +372,18 @@ class AppRuntime:
                     self._result = None
                     self._status = "generating"
                     model = self._model
+                    tones = self._tones
+                    reuse = self._tone_verdict
+                    self._tone_verdict = None
+                    cached_verdict = (reuse[1] if reuse and
+                        (reuse[0].chat_ref, reuse[0].message_id, reuse[0].update_time) ==
+                        (item.stamp.chat_ref, item.stamp.message_id, item.stamp.update_time)
+                        else None)
                     self._model_futures.append((item.stamp,
-                        self._pool.submit(self._generate, item, model,
+                        self._pool.submit(self._generate, item, model, tones, cached_verdict,
                                           observed.epoch if observed is not None else None, self._session)))
+                else:
+                    self._tone_verdict = None
 
         if (self._resolved_ref is not None and self._read_future is None
                 and monotonic() >= self._next_read_at):
@@ -352,6 +419,8 @@ class AppRuntime:
             self._resolved_ref = None
             self._title = None
             self._result = None
+            if observation.page != "chat":
+                self._tone_verdict = None
             self._read_future = None
             self._status = ("looking_for_chat" if observation.page == "chat" else
                             "accessibility_required" if observation.page == "permission_required" else "unidentified")
@@ -379,22 +448,24 @@ class AppRuntime:
         after = self._probe.observe()
         return (item if after.epoch == expected_epoch else None), after
 
-    def _generate(self, item: AnalysisInput, model: str, expected_epoch: int | None, session) -> ResultBundle:
+    def _generate(self, item: AnalysisInput, model: str, tones: tuple[str, str, str],
+                  cached_verdict: Verdict | None, expected_epoch: int | None, session) -> ResultBundle:
         if not session.is_current(item.stamp):
             return ResultBundle((), None, "stale_result")
-        verdict = None
+        verdict = cached_verdict
         cloud_error = None
-        try:
-            verdict = self._judge.judge(item)
-        except ModelError as error:
-            cloud_error = str(error)
+        if verdict is None:
+            try:
+                verdict = self._judge.judge(item)
+            except ModelError as error:
+                cloud_error = str(error)
         if not session.is_current(item.stamp):
             return ResultBundle((), None, "stale_result")
         try:
             replies = tuple(self._generator.generate(item, model,
-                                   should_continue=lambda: session.is_current(item.stamp)))
+                                   should_continue=lambda: session.is_current(item.stamp), tones=tones))
             if expected_epoch is not None and self._probe.observe().epoch != expected_epoch:
                 return ResultBundle((), None, "stale_result")
-            return ResultBundle(replies, verdict, cloud_error)
+            return ResultBundle(replies, verdict, cloud_error, item.text, item.stamp)
         except ModelError as error:
-            return ResultBundle((), verdict, str(error))
+            return ResultBundle((), verdict, str(error), item.text, item.stamp)
