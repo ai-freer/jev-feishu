@@ -5,6 +5,7 @@ from threading import Lock
 from typing import Literal
 
 from .types import ChatRef
+from .viewport import VisibleMessage, capture_visible
 
 
 @dataclass(frozen=True, repr=False)
@@ -24,6 +25,7 @@ class ChatObservation:
     title: str | None = None
     recipient_matches_title: bool = False
     external: bool | None = None
+    visible_messages: tuple[VisibleMessage, ...] = ()
 
     def __post_init__(self):
         if type(self.epoch) is not int or self.epoch < 0:
@@ -44,7 +46,8 @@ class ForegroundProbe:
     """Read only AX metadata for the active Lark chat; never capture screenshots."""
 
     def __init__(self, surface=None):
-        self._surface = surface or _mac_surface
+        self.follow_visible = False
+        self._surface = surface or (lambda: _mac_surface(visible=self.follow_visible))
         self._signature = None
         self._epoch = 0
         self._lock = Lock()
@@ -54,15 +57,17 @@ class ForegroundProbe:
             surface = self._surface()
             if len(surface) == 5:
                 surface = (*surface, None)
-            bundle, page, windows, title, recipient_match, external = surface
-            signature = (bundle, page, windows, title, recipient_match, external)
+            if len(surface) == 6:
+                surface = (*surface, ())
+            bundle, page, windows, title, recipient_match, external, messages = surface
+            signature = (bundle, page, windows, title, recipient_match, external, messages)
             if signature != self._signature:
                 self._epoch += 1
                 self._signature = signature
-            return ChatObservation(self._epoch, bundle, page, windows, (), title, recipient_match, external)
+            return ChatObservation(self._epoch, bundle, page, windows, (), title, recipient_match, external, messages)
 
 
-def _mac_surface(workspace=None):
+def _mac_surface(workspace=None, *, visible=False):
     import ApplicationServices as AX
     from AppKit import NSWorkspace
 
@@ -179,20 +184,24 @@ def _mac_surface(workspace=None):
         # Native AX retains wrappers that higher-level accessibility snapshots
         # flatten away. The badge is a separate slot beside the title wrapper.
         native = read(header, AX.kAXChildrenAttribute) if header is not None else None
-        if (native is not None and len(native) == 5 and native[1] == title_branch
+        if (native is not None and len(native) in (4, 5) and native[1] == title_branch
                 and read(header, AX.kAXRoleAttribute) == "AXGroup"):
             parts = [subtree(child, max_depth=8) for child in native]
             if any(part is None for part in parts):
                 return None
-            placeholder, title_part, badge_part, toolbar, navigation = parts
+            placeholder, title_part, badge_part, toolbar = parts[:4]
             if (any(row[0] not in ("AXGroup", "AXImage") for row in placeholder)
                     or texts(title_part) != [read(title_node, AX.kAXValueAttribute)]
                     or any(row[0] not in ("AXGroup", "AXStaticText") for row in title_part)
-                    or not toolbar_matches(toolbar)
-                    or texts(navigation) != ["消息", "云文档", "文件"]
+                    or not toolbar_matches(toolbar)):
+                return None
+            # Some P2P headers omit navigation entirely; validate it when present.
+            if len(parts) == 5:
+                navigation = parts[4]
+                if (texts(navigation) != ["消息", "云文档", "文件"]
                     or sum(row[0] == "AXImage" for row in navigation) < 3
                     or any(row[0] not in ("AXGroup", "AXStaticText", "AXImage") for row in navigation)):
-                return None
+                    return None
             if texts(badge_part) == ["外部"]:
                 return True
             # No label is meaningful only in this confirmed, fully read slot.
@@ -224,6 +233,7 @@ def _mac_surface(workspace=None):
         return False
 
     title = None
+    title_header = None
     external = None
     recipient_value = None
     for node, parent, header in walk(panes[0]):
@@ -232,6 +242,7 @@ def _mac_surface(workspace=None):
             value = read(node, AX.kAXValueAttribute)
             if isinstance(value, str) and value.strip():
                 title = value.strip()
+                title_header = header
                 if has_external_badge(header, parent):
                     external = True
                 else:
@@ -242,4 +253,5 @@ def _mac_surface(workspace=None):
                    and f"发送给 {title}" in recipient_value)
     if not matched:
         return bundle, "unknown", 1, None, False, None
-    return bundle, "chat", 1, title, True, external
+    surface = bundle, "chat", 1, title, True, external
+    return (*surface, capture_visible(panes[0], title_header, read)) if visible else surface

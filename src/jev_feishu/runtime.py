@@ -59,6 +59,7 @@ class AppRuntime:
         self._tones = validate_tones(self._config.get("reply_tones", DEFAULT_TONES))
         self._running = False
         self._manual = False
+        self.follow_mode = "latest"
         self._overlay_focused = False
         self._observed_epoch = None
         self._resolved_ref: ChatRef | None = None
@@ -137,6 +138,8 @@ class AppRuntime:
                 self._health = DependencyReport("unchecked", "internal_error", "unchecked", "unchecked")
             self._session = (SessionController(self._reader, self._health.own_id)
                              if self._health.auth == "ready" and self._health.own_id else None)
+            if self._session is not None:
+                self._session.set_follow_mode(self.follow_mode)
             self._status = self._idle_status()
         if self._test_future is not None and self._test_future.done():
             future, self._test_future = self._test_future, None
@@ -159,6 +162,18 @@ class AppRuntime:
         self._read_future = None
         self._next_read_at = 0.0
         self._status = "looking_for_chat"
+
+    def set_follow_mode(self, mode):
+        if mode not in ("latest", "visible"):
+            raise ValueError("invalid_follow_mode")
+        running = self._running
+        self.pause()
+        self.follow_mode = mode
+        self._probe.follow_visible = mode == "visible"
+        if self._session is not None:
+            self._session.set_follow_mode(mode)
+        if running:
+            self.start()
 
     def pause(self):
         self._running = False

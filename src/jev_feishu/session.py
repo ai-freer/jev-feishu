@@ -47,6 +47,16 @@ class SessionController:
         self._stamp: VersionStamp | None = None
         self._candidate: object | None = None
         self._read_status: str | None = None
+        self._follow_mode = "latest"
+        self._visible_messages = ()
+        self._settle_at = 0.0
+
+    def set_follow_mode(self, mode):
+        if mode not in ("latest", "visible"):
+            raise ValueError("invalid_follow_mode")
+        with self._lock:
+            self._follow_mode = mode
+            self._invalidate()
 
     @property
     def read_status(self):
@@ -132,6 +142,8 @@ class SessionController:
                 return
             if not self._active or self._ref != ref or changed_observation:
                 self._invalidate()
+                self._settle_at = self._clock() + 0.8
+            self._visible_messages = observation.visible_messages
             self._active = True
             self._ref = ref
 
@@ -149,19 +161,25 @@ class SessionController:
             if not self._active or self._paused or self._overlay_focused or self._ref is None:
                 return None
             now = self._clock()
+            visible = self._follow_mode == "visible" and not self._manual
+            snapshot = self._visible_messages
+            if visible and (not snapshot or now < self._settle_at):
+                self._read_status = "viewport_unmatched" if not snapshot else "viewport_settling"
+                return None
             if now < self._next_poll:
                 return None
             ref, epoch = self._ref, self._epoch
             self._next_poll = now + 3
         try:
-            messages = self._reader.list_recent(ref)
+            messages = (self._reader.list_visible(ref, snapshot) if visible
+                        else self._reader.list_recent(ref))
         except ReaderError:
             with self._lock:
                 if (self._active and self._ref == ref and self._epoch == epoch
                         and not self._paused and not self._overlay_focused):
                     self._failure_count += 1
                     self._next_poll = self._clock() + min(3 * (2 ** (self._failure_count - 1)), 60)
-                    self._read_status = "read_error"
+                    self._read_status = "viewport_unmatched" if visible else "read_error"
                     self._candidate = None
                     self._stamp = None
                     self._last_key = None

@@ -24,11 +24,14 @@ class PackagingTests(unittest.TestCase):
             shutil.copyfile(root / "LICENSE", project / "LICENSE")
             (packaging / "launcher.rs").write_text("fn main() {}\n")
             (project / "src/jev_feishu").mkdir(parents=True)
-            (project / "src/jev_feishu/__init__.py").write_text("")
+            (project / "src/jev_feishu/__init__.py").write_text('__version__ = "0.2.0"\n')
             (project / ".venv/lib/python3.12/site-packages").mkdir(parents=True)
             runtime = folder / "runtime"
             (runtime / "bin").mkdir(parents=True)
             (runtime / "lib").mkdir()
+            metadata_dir = runtime / "lib/python3.12/site-packages/sample.dist-info"
+            metadata_dir.mkdir(parents=True)
+            (metadata_dir / "direct_url.json").write_text('{"url":"file:///private/build-fixture"}')
             python = runtime / "bin/python3.12"
             # This fixture exercises signing, so even the runtime stub is Mach-O.
             shutil.copyfile(shutil.which("true"), python)
@@ -70,9 +73,12 @@ class PackagingTests(unittest.TestCase):
                                         capture_output=True, text=True, timeout=5).stdout.splitlines()
             self.assertIn("com.apple.FinderInfo", attributes, "simulate reattached metadata")
             self.assertTrue((output / "Contents/MacOS/JevFeishu").is_file())
+            self.assertEqual(list(output.rglob("direct_url.json")), [])
             self.assertEqual((output / "Contents/Resources/LICENSE").read_bytes(),
                              (root / "LICENSE").read_bytes())
             metadata = plistlib.loads((output / "Contents/Info.plist").read_bytes())
+            self.assertEqual(metadata["CFBundleShortVersionString"], "0.2.0")
+            self.assertEqual(metadata["CFBundleVersion"], "0.2.0")
             icon = output / "Contents/Resources" / metadata["CFBundleIconFile"]
             self.assertEqual(icon.read_bytes(), (root / "packaging/assets/JevFeishu.icns").read_bytes())
             self.assertTrue(icon.read_bytes().startswith(b"icns"))

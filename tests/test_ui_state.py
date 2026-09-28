@@ -55,6 +55,18 @@ class FakeProbe:
 
 
 class RuntimeTests(unittest.TestCase):
+    def test_mode_switch_discards_previous_reply_and_enables_viewport(self):
+        self.runtime.start()
+        self.runtime.pulse()
+        self.runtime.pulse()
+        self.assertIsNotNone(self.runtime.display().result)
+        self.runtime.set_follow_mode("visible")
+        self.assertTrue(self.probe.follow_visible)
+        self.assertIsNone(self.runtime.display().result)
+        self.assertEqual(self.runtime.follow_mode, "visible")
+        self.runtime.set_follow_mode("latest")
+        self.assertFalse(self.probe.follow_visible)
+
     def setUp(self):
         self.probe = FakeProbe()
         self.reader = Mock()

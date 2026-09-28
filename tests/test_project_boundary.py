@@ -37,12 +37,14 @@ class ProjectBoundaryTests(unittest.TestCase):
 
     def test_package_import_is_inert(self):
         import importlib.util
+        import tomllib
         spec = importlib.util.spec_from_file_location(
             "jev_feishu", ROOT / "src/jev_feishu/__init__.py"
         )
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
-        self.assertEqual(module.__version__, "0.1.0")
+        project = tomllib.loads((ROOT / "pyproject.toml").read_text())
+        self.assertEqual(module.__version__, project["project"]["version"])
 
 
 if __name__ == "__main__":

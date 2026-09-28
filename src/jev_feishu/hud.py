@@ -3,6 +3,7 @@
 import AppKit
 from Foundation import NSObject, NSMakeRect, NSTimer
 import objc
+from . import __version__
 
 from .replies import TONES
 from .model_services import PROVIDERS, PROVIDER_BASES, is_loopback
@@ -22,6 +23,8 @@ ACTION_HINTS = {
     "夸奖": "表示感谢，回应具体成果",
 }
 STATUS_TEXT = {
+    "viewport_unmatched": "可见消息无法唯一定位；请稍微滚动或切换跟随最新",
+    "viewport_settling": "等待滚动停稳…",
     "paused": "已暂停",
     "checking_dependencies": "正在检查飞书授权与本机模型…",
     "lark_auth_unavailable": "飞书授权不可用；请打开设置与连接检查",
@@ -122,7 +125,7 @@ class HUDController(NSObject):
                  | AppKit.NSWindowStyleMaskNonactivatingPanel)
         self.panel = AppKit.NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
             NSMakeRect(0, 0, WIDTH, HEIGHT), style, AppKit.NSBackingStoreBuffered, False)
-        self.panel.setTitle_("Jev 飞书助手")
+        self.panel.setTitle_(f"Jev 飞书助手 {__version__}")
         self.panel.setReleasedWhenClosed_(False)
         self.panel.setLevel_(AppKit.NSFloatingWindowLevel)
         self.panel.setHidesOnDeactivate_(False)
@@ -137,6 +140,13 @@ class HUDController(NSObject):
         view.addSubview_(self.chat)
         self.run_button = self._button(NSMakeRect(20, 562, 120, 32), "开始跟随", "toggleRun:")
         view.addSubview_(self.run_button)
+        self.follow_select = AppKit.NSPopUpButton.alloc().initWithFrame_pullsDown_(
+            NSMakeRect(143, 562, 155, 32), False)
+        self.follow_select.addItemsWithTitles_(["跟随最新消息", "跟随可见消息"])
+        self.follow_select.setTarget_(self)
+        self.follow_select.setAction_("followModeChanged:")
+        self.follow_select.setToolTip_("可见模式：滚动停稳后回应最下方完整可见的对方纯文字消息；无法可靠定位时停读。")
+        view.addSubview_(self.follow_select)
         self.model_select = AppKit.NSPopUpButton.alloc().initWithFrame_pullsDown_(
             NSMakeRect(302, 562, 178, 32), False)
         self.model_select.addItemsWithTitles_(list(self.runtime.available_reply_models))
@@ -297,6 +307,10 @@ class HUDController(NSObject):
 
     def modelChanged_(self, sender):
         self.runtime.set_model(str(sender.titleOfSelectedItem()))
+
+    def followModeChanged_(self, sender):
+        self.runtime.set_follow_mode("visible" if sender.indexOfSelectedItem() == 1 else "latest")
+        self._render(self.runtime.display())
 
     def toneChanged_(self, sender):
         index = sender.tag()

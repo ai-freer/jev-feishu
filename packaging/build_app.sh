@@ -3,6 +3,8 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 uv sync --python 3.12 --no-dev --quiet
+version="$(awk -F '"' '/^__version__ =/ {print $2}' src/jev_feishu/__init__.py)"
+[[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Invalid app version" >&2; exit 1; }
 
 build_root="$(mktemp -d -t jev-feishu-build)"
 trap 'rm -rf "$build_root"' EXIT
@@ -16,8 +18,8 @@ mkdir -p "$app_path/Contents/MacOS" "$app_path/Contents/Resources" "$site_target
 cp LICENSE "$app_path/Contents/Resources/LICENSE"
 cp packaging/assets/JevFeishu.icns "$app_path/Contents/Resources/JevFeishu.icns"
 cp "$runtime_source/bin/python3.12" "$app_path/Contents/MacOS/JevFeishuPython"
-rsync -a --exclude='__pycache__' --exclude='*.pyc' "$runtime_source/lib/" "$runtime_target/lib/"
-rsync -a --exclude='__pycache__' --exclude='*.pyc' \
+rsync -a --exclude='__pycache__' --exclude='*.pyc' --exclude='direct_url.json' "$runtime_source/lib/" "$runtime_target/lib/"
+rsync -a --exclude='__pycache__' --exclude='*.pyc' --exclude='direct_url.json' \
   --exclude='__editable__*.pth' --exclude='jev_feishu-*.dist-info' \
   .venv/lib/python3.12/site-packages/ "$site_target/"
 rsync -a --exclude='__pycache__' --exclude='*.pyc' src/jev_feishu/ "$site_target/jev_feishu/"
@@ -30,7 +32,7 @@ if sys.argv == [""]:
     main()
 PYTHON
 
-cat > "$app_path/Contents/Info.plist" <<'PLIST'
+cat > "$app_path/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
@@ -40,8 +42,8 @@ cat > "$app_path/Contents/Info.plist" <<'PLIST'
   <key>CFBundleIdentifier</key><string>com.danielpan.jevfeishu</string>
   <key>CFBundleIconFile</key><string>JevFeishu.icns</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>0.1.0</string>
-  <key>CFBundleVersion</key><string>1</string>
+  <key>CFBundleShortVersionString</key><string>$version</string>
+  <key>CFBundleVersion</key><string>$version</string>
   <key>LSMinimumSystemVersion</key><string>13.0</string>
   <key>LSUIElement</key><true/>
 </dict></plist>

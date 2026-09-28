@@ -2,9 +2,11 @@
 
 import json
 import subprocess
+from datetime import datetime, timedelta, timezone
 
 from .cli_path import lark_cli_env, lark_cli_path
 from .types import ChatRef, TextMessage
+from .viewport import normalized
 
 
 class ReaderError(RuntimeError):
@@ -18,7 +20,7 @@ def _string(data, key):
     return value
 
 
-def parse_messages(envelope: dict) -> list[TextMessage]:
+def parse_messages(envelope: dict, *, latest_only=True) -> list[TextMessage]:
     if not isinstance(envelope, dict) or envelope.get("ok") is not True:
         raise ReaderError("cli_error")
     if envelope.get("identity") != "user":
@@ -26,7 +28,7 @@ def parse_messages(envelope: dict) -> list[TextMessage]:
     data = envelope.get("data")
     if not isinstance(data, dict) or not isinstance(data.get("messages"), list):
         raise ReaderError("invalid_response")
-    if data["messages"] and isinstance(data["messages"][0], dict):
+    if latest_only and data["messages"] and isinstance(data["messages"][0], dict):
         latest = data["messages"][0]
         if latest.get("deleted") is False:
             if _string(latest, "msg_type") != "text" or latest.get("thread_id"):
@@ -71,23 +73,97 @@ def parse_messages(envelope: dict) -> list[TextMessage]:
 class LarkReader:
     def __init__(self, runner=subprocess.run):
         self._runner = runner
+        self._visible_cache = None
 
     def list_recent(self, ref: ChatRef, limit: int = 10) -> list[TextMessage]:
         if type(limit) is not int or not 1 <= limit <= 50:
             raise ValueError("invalid_page_size")
         flag = "--chat-id" if ref.kind == "chat" else "--user-id"
+        command = [
+            "im", "+chat-messages-list", "--as", "user",
+            flag, ref.value, "--page-size", str(limit), "--order", "desc",
+            "--no-reactions", "--json",
+        ]
+        return parse_messages(self._call(command))
+
+    def list_visible(self, ref, visible):
+        if ref.kind != "chat":
+            raise ReaderError("viewport_unmatched")
+        incoming = [row for row in visible if not row.own]
+        if not incoming:
+            raise ReaderError("viewport_unmatched")
+        target = incoming[-1]
+        key = (ref, tuple((r.token, r.text, r.own) for r in visible))
+        cache = self._visible_cache
+        if cache and cache[0] == key:
+            return self._visible_history(ref, visible, target, cache[1])
+        else:
+            query = target.text.strip()[:80]
+            if len(normalized(query)) < 2:
+                raise ReaderError("viewport_unmatched")
+            data = self._call(["im", "+messages-search", "--as", "user", "--chat-id", ref.value,
+                               "--query", query, "--page-size", "50", "--no-reactions", "--json"])
+            messages = parse_messages(data, latest_only=False)
+            if (data["data"].get("has_more") is not False
+                    or any(row.get("chat_id") != ref.value for row in data["data"]["messages"])):
+                raise ReaderError("viewport_unmatched")
+            exact = [m for m in messages if not m.deleted and normalized(m.text) == normalized(target.text)]
+            if not 1 <= len(exact) <= 5:
+                raise ReaderError("viewport_unmatched")
+            matches = []
+            for anchor in exact:
+                try:
+                    history = self._visible_history(ref, visible, target, anchor)
+                except ReaderError as error:
+                    if str(error) != "viewport_unmatched":
+                        raise
+                else:
+                    matches.append((anchor, history))
+            if len(matches) != 1:
+                raise ReaderError("viewport_unmatched")
+            anchor, history = matches[0]
+            self._visible_cache = key, anchor
+            return history
+
+    def _visible_history(self, ref, visible, target, anchor):
+        try:
+            # The CLI may render local time to the minute. Include that minute,
+            # then trim by verified ID, never by the rounded display timestamp.
+            if anchor.create_time.isdigit():
+                instant = datetime.fromtimestamp(int(anchor.create_time) / 1000, timezone.utc)
+            else:
+                instant = datetime.fromisoformat(anchor.create_time).astimezone()
+            end = (instant + timedelta(minutes=1)).isoformat()
+        except (ValueError, OverflowError, OSError):
+            raise ReaderError("invalid_response") from None
+        data = self._call(["im", "+chat-messages-list", "--as", "user", "--chat-id", ref.value,
+                           "--end", end, "--page-size", "50", "--order", "desc", "--no-reactions", "--json"])
+        messages = parse_messages(data, latest_only=False)
+        if any(row.get("chat_id") != ref.value for row in data["data"]["messages"]):
+            raise ReaderError("viewport_unmatched")
+        indexes = [i for i, m in enumerate(messages) if m.message_id == anchor.message_id and not m.deleted
+                   and normalized(m.text) == normalized(target.text)]
+        if len(indexes) != 1:
+            self._visible_cache = None
+            raise ReaderError("viewport_unmatched")
+        index = indexes[0]
+        predecessors = visible[:visible.index(target)]
+        if predecessors:
+            previous = normalized(predecessors[-1].text)
+            if not any(normalized(m.text) == previous and not m.deleted for m in messages[index + 1:]):
+                raise ReaderError("viewport_unmatched")
+        elif len(normalized(target.text)) < 12:
+            raise ReaderError("viewport_unmatched")
+        return messages[index:]
+
+    def _call(self, command):
         try:
             binary = lark_cli_path()
         except FileNotFoundError:
             raise ReaderError("cli_unavailable") from None
-        command = [
-            binary, "im", "+chat-messages-list", "--as", "user",
-            flag, ref.value, "--page-size", str(limit), "--order", "desc",
-            "--no-reactions", "--json",
-        ]
         try:
             response = self._runner(
-                command, shell=False, timeout=15, capture_output=True, text=True,
+                [binary, *command], shell=False, timeout=15, capture_output=True, text=True,
                 env=lark_cli_env(binary),
             )
         except subprocess.TimeoutExpired:
@@ -100,4 +176,4 @@ class LarkReader:
             envelope = json.loads(response.stdout)
         except (ValueError, TypeError):
             raise ReaderError("invalid_response") from None
-        return parse_messages(envelope)
+        return envelope

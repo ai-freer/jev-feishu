@@ -51,7 +51,8 @@ class ForegroundTests(unittest.TestCase):
         probe = ForegroundProbe(lambda: next(surfaces))
         self.assertEqual([probe.observe().epoch for _ in range(3)], [1, 2, 3])
 
-    def desktop_surface(self, *, marker=None, mutate=None, body_marker=False, ax_error=False, native=False):
+    def desktop_surface(self, *, marker=None, mutate=None, body_marker=False, ax_error=False, native=False,
+                        navigation=True):
         import ApplicationServices as AX
 
         def node(role, value=None, children=None, description=None):
@@ -87,6 +88,8 @@ class ForegroundTests(unittest.TestCase):
                 wrap(node("AXGroup", children=[]), 3), wrap(title), wrap(badge),
                 wrap(node("AXGroup", children=buttons)), node("AXGroup", children=tabs),
             ])
+            if not navigation:
+                header[AX.kAXChildrenAttribute].pop()
         if mutate:
             mutate(header)
         pane = node("AXWebArea", children=[
@@ -122,6 +125,21 @@ class ForegroundTests(unittest.TestCase):
         self.assertIs(self.desktop_surface(native=True, marker="外部")[-1], True)
         self.assertIs(self.desktop_surface(native=True, body_marker=True)[-1], False)
 
+    def test_native_header_without_navigation_distinguishes_internal_and_external(self):
+        self.assertIs(self.desktop_surface(native=True, navigation=False)[-1], False)
+        self.assertIs(self.desktop_surface(native=True, navigation=False, marker="外部")[-1], True)
+        self.assertIs(self.desktop_surface(native=True, navigation=False, body_marker=True)[-1], False)
+
+    def test_incomplete_header_without_navigation_remains_unknown(self):
+        import ApplicationServices as AX
+        children = AX.kAXChildrenAttribute
+        for mutate in (lambda h: h[children][2].update({children: None}),
+                       lambda h: h[children].pop(2),
+                       lambda h: h[children][3].update({children: []})):
+            self.assertIsNone(self.desktop_surface(native=True, navigation=False, mutate=mutate)[-1])
+        self.assertIsNone(self.desktop_surface(native=True, navigation=False, marker="未知徽标")[-1])
+        self.assertIsNone(self.desktop_surface(native=True, navigation=False, ax_error=True)[-1])
+
     def test_native_header_missing_badge_slot_or_read_failure_remains_unknown(self):
         import ApplicationServices as AX
         children = AX.kAXChildrenAttribute
@@ -147,9 +165,12 @@ class ForegroundTests(unittest.TestCase):
         def result(**data):
             return subprocess.CompletedProcess([], 0, json.dumps({"ok": True, "data": data}), "")
 
-        for marker, expected in ((None, "oc_internal"), ("外部", "oc_external")):
-            with self.subTest(marker=marker):
-                observation = ForegroundProbe(lambda: self.desktop_surface(marker=marker)).observe()
+        for marker, expected, layout in (
+                (marker, expected, layout)
+                for marker, expected in ((None, "oc_internal"), ("外部", "oc_external"))
+                for layout in ({}, {"native": True, "navigation": False})):
+            with self.subTest(marker=marker, layout=layout):
+                observation = ForegroundProbe(lambda: self.desktop_surface(marker=marker, **layout)).observe()
                 runner = Mock(side_effect=[result(users=[
                     {"localized_name": "虚构对象", "p2p_chat_id": "oc_internal", "is_cross_tenant": False},
                     {"localized_name": "虚构对象", "p2p_chat_id": "oc_external", "is_cross_tenant": True},

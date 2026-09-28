@@ -19,6 +19,52 @@ def envelope(*items):
 
 
 class LarkReaderTests(unittest.TestCase):
+    def test_duplicate_short_text_is_disambiguated_by_visible_predecessor(self):
+        from src.jev_feishu.viewport import VisibleMessage
+        a = message(message_id="om_a", content="好的", chat_id="oc_fake", create_time="2025-06-15 18:30")
+        b = dict(a, message_id="om_b", create_time="1760000000000")
+        search = envelope(a, b); search["data"]["has_more"] = False
+        first = envelope(a, message(content="屏幕上的前一句", chat_id="oc_fake"))
+        second = envelope(b, message(content="另一段对话", chat_id="oc_fake"))
+        runner = Mock(side_effect=[subprocess.CompletedProcess([], 0, json.dumps(x), "")
+                                   for x in (search, first, second)])
+        result = LarkReader(runner).list_visible(ChatRef("chat", "oc_fake"), (
+            VisibleMessage("123", "屏幕上的前一句", True, 100),
+            VisibleMessage("124", "好的", False, 150)))
+        self.assertEqual(result[0].message_id, "om_a")
+
+    def test_visible_target_uses_search_and_older_context_without_future(self):
+        from src.jev_feishu.viewport import VisibleMessage
+        target = message(content="这是屏幕中完整可见的历史问题", chat_id="oc_fake", create_time="1750000000000")
+        older = message(message_id="om_before", content="之前的上下文", chat_id="oc_fake")
+        newer = message(message_id="om_after", content="目标之后的消息", chat_id="oc_fake")
+        search = envelope(target)
+        search["data"]["has_more"] = False
+        def run(args, **kwargs):
+            if "+messages-search" in args:
+                self.assertEqual(args[args.index("--chat-id") + 1], "oc_fake")
+                data = search
+            else:
+                self.assertIn("--end", args)
+                data = envelope(newer, target, older)
+            return subprocess.CompletedProcess(args, 0, json.dumps(data), "")
+        reader = LarkReader(run)
+        result = reader.list_visible(ChatRef("chat", "oc_fake"), (
+            VisibleMessage("123", "之前的上下文", False, 100),
+            VisibleMessage("124", target["content"], False, 150)))
+        self.assertEqual([x.message_id for x in result], ["om_fake", "om_before"])
+
+    def test_visible_search_rejects_ambiguous_incomplete_or_wrong_chat(self):
+        from src.jev_feishu.viewport import VisibleMessage
+        row = message(chat_id="oc_fake")
+        for rows, more in (([row, dict(row, message_id="om_duplicate")], False),
+                           ([row], True), ([dict(row, chat_id="oc_other")], False)):
+            data = envelope(*rows); data["data"]["has_more"] = more
+            runner = Mock(return_value=subprocess.CompletedProcess([], 0, json.dumps(data), ""))
+            with self.assertRaises(ReaderError):
+                LarkReader(runner).list_visible(ChatRef("chat", "oc_fake"),
+                    (VisibleMessage("123", row["content"], False, 100),))
+
     def test_text_and_edit(self):
         result = parse_messages(envelope(message(updated=True, update_time="2000")))
         self.assertEqual(result[0].text, "虚构测试消息")
