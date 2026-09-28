@@ -5,7 +5,7 @@ from unittest.mock import Mock
 
 from src.jev_feishu.http_client import ModelError
 from src.jev_feishu.replies import DEFAULT_TONES, FACT_RULES, OUTPUT_RULES, SYSTEM_PROMPT, TONES, ReplyGenerator
-from src.jev_feishu.session import AnalysisInput, VersionStamp
+from src.jev_feishu.session import AnalysisInput, VersionStamp, model_input
 from src.jev_feishu.types import ChatRef
 
 
@@ -74,10 +74,7 @@ class ReplyTests(unittest.TestCase):
             self.assertNotIn("霸道总裁", system["content"])
             self.assertNotIn("职场嘴替", system["content"])
             self.assertNotIn(value.text, system["content"])
-            self.assertEqual(json.loads(user["content"]), {
-                "latest_message": value.text,
-                "previous_messages_oldest_first": ["虚构较早前文", "虚构较新前文"],
-            })
+            self.assertEqual(json.loads(user["content"]), model_input(value))
             self.assertNotIn("每条不超过30字", system["content"])
             self.assertNotIn("第二条语气更鲜明", system["content"])
 

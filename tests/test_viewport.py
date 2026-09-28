@@ -80,11 +80,26 @@ class VisibleSessionTests(unittest.TestCase):
         self.assertEqual(item.stamp.message_id, "123")
         self.assertEqual(self.session.target_text, "历史问题")
         self.assertEqual(item.context, ("之前的上下文",))
+        self.assertEqual(item.context_senders, ("我",))
         self.reader.list_recent.assert_not_called()
         self.reader.list_visible.assert_not_called()
         self.session.update_current(replace(obs(2), visible_messages=()), A)
         self.assertEqual(self.session.target_text, "")
         self.assertFalse(self.session.accept_result(item.stamp, "过时回复"))
+
+    def test_eight_visible_context_messages_keep_roles_and_quote(self):
+        self.session.set_follow_mode("visible")
+        self.session.resume()
+        rows = tuple(VisibleMessage(str(i), f"前文{i}", i % 2 == 0, i * 30) for i in range(8))
+        target = VisibleMessage("8", "已完成核查", False, 300, "回复我：请核查一下")
+        self.session.update_current(replace(obs(1), visible_messages=(*rows, target)), A)
+        self.now = 1
+        item = self.session.tick()
+        self.assertEqual(len(item.context), 8)
+        self.assertEqual(item.context[-1], "前文0")
+        self.assertEqual(item.context_senders[-1], "我")
+        self.assertEqual(item.target_quote, "回复我：请核查一下")
+        self.reader.list_recent.assert_not_called()
 
     def test_short_repeated_text_needs_no_api_matching(self):
         self.session.set_follow_mode("visible")

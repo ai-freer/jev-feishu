@@ -81,12 +81,12 @@ class FixtureScenario:
         if error:
             raise self.module("http_client").ModelError(error)
         if kind == "jev":
-            assert payload["state"].startswith("虚构")
+            assert json.loads(payload["state"])["target_message"]["text"].startswith("虚构")
             return {"answers": {"intent": {"choice": "问进度", "confidence": 0.9}, "risk": {"score": 1}}}
         assert url == "http://127.0.0.1:11434/v1/chat/completions"
         assert payload["reasoning_effort"] == "none"
         assert [message["role"] for message in payload["messages"]] == ["system", "user"]
-        assert json.loads(payload["messages"][1]["content"])["latest_message"].startswith("虚构")
+        assert json.loads(payload["messages"][1]["content"])["target_message"]["text"].startswith("虚构")
         serial = len(self.model_calls)
         return {"choices": [{"message": {"content": f"虚构候选 {serial}：稍后给你进展。\n虚构候选 {serial}：今天整理后同步。"}}]}
 

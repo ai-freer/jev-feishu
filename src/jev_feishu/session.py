@@ -23,6 +23,33 @@ class AnalysisInput:
     stamp: VersionStamp
     text: str
     context: tuple[str, ...]
+    context_senders: tuple[str, ...] = ()
+    target_sender: str = "对方（具体身份未确认）"
+    target_quote: str = ""
+    context_quotes: tuple[str, ...] = ()
+
+
+def model_input(item: AnalysisInput) -> dict:
+    """One bounded, chronological, speaker-labelled input for both models."""
+    recent = []
+    budget = 8000
+    for index, text in enumerate(item.context[:8]):
+        if budget <= 0:
+            break
+        value = text[:min(2000, budget)]
+        budget -= len(value)
+        quote = item.context_quotes[index] if index < len(item.context_quotes) else ""
+        quote = quote[:min(1000, budget)]
+        budget -= len(quote)
+        recent.append({"speaker": item.context_senders[index] if index < len(item.context_senders)
+                       else "发言者未确认", "text": value, "quoted_text": quote,
+                       "truncated": len(value) < len(text) or
+                       (index < len(item.context_quotes) and len(quote) < len(item.context_quotes[index]))})
+    return {"reply_as": "我", "target_message": {"speaker": item.target_sender,
+            "text": item.text[:8000], "quoted_text": item.target_quote[:2000],
+            "truncated": len(item.text) > 8000 or len(item.target_quote) > 2000},
+            "previous_messages_oldest_first": list(reversed(recent)),
+            "context_incomplete": len(recent) < len(item.context) or any(m["truncated"] for m in recent)}
 
 
 class SessionController:
@@ -191,8 +218,11 @@ class SessionController:
                 stamp = VersionStamp(self._epoch, self._ref, *key)
                 self._stamp = stamp
                 self._candidate = None
-                context = tuple(row.text for row in reversed(snapshot[:-1]) if row.text.strip())[:2]
-                return AnalysisInput(stamp, target.text, context)
+                prior = tuple(row for row in reversed(snapshot[:-1]) if row.text.strip())[:8]
+                return AnalysisInput(stamp, target.text, tuple(row.text for row in prior),
+                                     tuple("我" if row.own else "对方（具体身份未确认）" for row in prior),
+                                     target_quote=target.quote,
+                                     context_quotes=tuple(row.quote for row in prior))
             if now < self._next_poll:
                 return None
             ref, epoch = self._ref, self._epoch
@@ -243,8 +273,17 @@ class SessionController:
             stamp = VersionStamp(epoch, ref, *key)
             self._stamp = stamp
             self._candidate = None
-            context = tuple(m.text for m in messages if not m.deleted and m.message_id != latest.message_id)[:2]
-            return AnalysisInput(stamp, latest.text, context)
+            prior = tuple(m for m in messages[messages.index(latest) + 1:] if not m.deleted)[:8]
+            speakers = {}
+            def speaker(sender):
+                if sender == self._own_sender_id:
+                    return "我"
+                if sender not in speakers:
+                    speakers[sender] = f"其他参与者{len(speakers) + 1}"
+                return speakers[sender]
+            target_sender = speaker(latest.sender_id)
+            return AnalysisInput(stamp, latest.text, tuple(m.text for m in prior),
+                                 tuple(speaker(m.sender_id) for m in prior), target_sender)
 
     def accept_result(self, stamp: VersionStamp, candidate: object) -> bool:
         with self._lock:

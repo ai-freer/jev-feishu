@@ -110,7 +110,8 @@ class DiagnosticsTests(unittest.TestCase):
         self.assertEqual((cloud.status, local.status, local.candidate_count), ("ready", "ready", 6))
         self.assertEqual(len(requests), 4)
         self.assertIn("虚构", requests[0][1]["state"])
-        self.assertEqual(requests[0][1]["state"], "虚构连接测试：你好，今天过得怎么样？")
+        self.assertEqual(json.loads(requests[0][1]["state"])["target_message"]["text"],
+                         "虚构连接测试：你好，今天过得怎么样？")
         self.assertTrue(all(p["model"] == "qwen3.5:9b" and p["reasoning_effort"] == "none"
                             for _, p in requests[1:]))
         self.assertNotIn("虚构回复", repr(local))

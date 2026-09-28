@@ -22,6 +22,17 @@ def msg(identifier="om_fake", sender="ou_other", text="虚构消息", update=Non
 
 
 class SessionTests(unittest.TestCase):
+    def test_api_context_preserves_eight_messages_and_distinct_senders(self):
+        self.activate()
+        self.reader.list_recent.return_value = [msg("target", "ou_other", "已核查正常")] + [
+            msg(f"old{i}", "ou_self" if i % 2 else "ou_third", f"前文{i}") for i in range(9)]
+        item = self.session.tick()
+        self.assertEqual(len(item.context), 8)
+        self.assertEqual(item.target_sender, "其他参与者1")
+        self.assertEqual(item.context_senders[0], "其他参与者2")
+        self.assertEqual(item.context_senders[1], "我")
+        self.assertNotIn("前文8", item.context)
+
     def setUp(self):
         self.now = 0.0
         self.reader = Mock()

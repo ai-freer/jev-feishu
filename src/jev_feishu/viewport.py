@@ -9,6 +9,7 @@ class VisibleMessage:
     text: str
     own: bool
     top: int
+    quote: str = ""
 
 
 def normalized(text):
@@ -38,7 +39,7 @@ def visible_bubbles(rows, bounds):
         if (w > 0 and h > 4 and left >= x and left + w <= x + width + 1
                 and top < y + height - 2 and top + h > y + 2):
             result.append(VisibleMessage(token, text, own, round(top)))
-    return tuple(sorted(result, key=lambda row: row.top)[-8:])
+    return tuple(sorted(result, key=lambda row: row.top)[-9:])
 
 
 def capture_visible(pane, header, read):
@@ -77,6 +78,7 @@ def capture_visible(pane, header, read):
     if bottom <= top:
         return ()
     rows = []
+    quotes = {}
     for node in nodes:
         classes = read(node, "AXDOMClassList") or ()
         if "MessageContextMenuTrigger" not in classes:
@@ -92,4 +94,12 @@ def capture_visible(pane, header, read):
             return ()
         # Preserve unsupported bubbles as anchors: never jump above them.
         rows.append((token, bubble_text(subtree, read, descendants), own, frame))
-    return visible_bubbles(rows, (area[0], top, area[2], bottom - top))
+        headers = [n for n in subtree if "referencePreviewTitle__wrapper" in
+                   (read(n, "AXDOMClassList") or ())]
+        if len(headers) == 1:
+            content = descendants(headers[0], 100)
+            if content is not None:
+                quotes[token] = "".join(read(n, "AXValue") or "" for n in content
+                                        if read(n, "AXRole") == "AXStaticText")
+    return tuple(VisibleMessage(m.token, m.text, m.own, m.top, quotes.get(m.token, ""))
+                 for m in visible_bubbles(rows, (area[0], top, area[2], bottom - top)))

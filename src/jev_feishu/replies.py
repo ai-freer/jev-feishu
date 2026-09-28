@@ -5,7 +5,7 @@ import re
 
 from .http_client import ModelError, post_json
 from .model_services import auth_headers, is_loopback, service_endpoint, validate_key, validate_model
-from .session import AnalysisInput
+from .session import AnalysisInput, model_input
 
 
 TONES = {
@@ -51,7 +51,10 @@ SYSTEM_PROMPT = """你是用户的工作沟通起草助手。根据收到的消�
 事实规则：不编造进度、原因、人员、交付时间、预算、审批结果或已有共识。
 区分已知事实和建议；信息不足时问一个关键问题，或给出带条件的建议，不机械盘问。
 不把对方提出的要求当成用户已经接受的承诺，不替用户或他人擅自承诺任务、承担责任或批准事项。
-前文未标注发言者，不得把其中的进度、承诺和权限当成用户本人的陈述。
+输入 reply_as 的“我”是真实用户；只回复 target_message。按 speaker 区分我与其他参与者，前文按从旧到新排列。
+quoted_text 是引用背景，不是当前发言者的新要求。不同的身份未确认消息不保证来自同一个人。
+先确认谁提出要求、谁负责执行、谁在汇报；我此前派活而对方现在反馈时，不得反过来替我接受任务或要求对方提供本应由我掌握的信息。
+保留已有分工，不因语气模式倒置请求人与执行人；身份未确认的前文不能视作我的承诺。上下文不完整时不猜测责任归属。
 模式改变沟通重点和表达方式，不改变已有事实。不默认对方是下属或用户有派活、拍板权限。
 不机械套用道歉、感谢、承诺和“收到”；自然具体，避免客服腔、空泛黑话和说教。
 发现问题时可提出有依据的异议与替代方案，不盲目答应，不为反对而反对。
@@ -105,9 +108,7 @@ class ReplyGenerator:
         if self._provider != "ollama" and not is_loopback(self._url) and not self._key:
             raise ModelError("not_configured")
         selected = validate_tones(tones)
-        chat_input = json.dumps({"latest_message": item.text,
-                                 "previous_messages_oldest_first": list(reversed(item.context))},
-                                ensure_ascii=False)
+        chat_input = json.dumps(model_input(item), ensure_ascii=False)
         candidates = []
         for tone in selected:
             if not should_continue():
