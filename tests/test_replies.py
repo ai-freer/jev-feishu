@@ -107,6 +107,52 @@ class ReplyTests(unittest.TestCase):
         transport = Mock(side_effect=ModelError("connection_error"))
         with self.assertRaisesRegex(ModelError, "connection_error"):
             ReplyGenerator(transport=transport).generate(item())
-        self.assertEqual(transport.call_count, 1)
+        self.assertEqual(transport.call_count, 3)
         with self.assertRaises(ValueError):
             ReplyGenerator().generate(item(), "")
+
+    def test_failed_group_does_not_discard_successful_groups(self):
+        transport = Mock(side_effect=[answer(), ModelError("connection_error"), answer()])
+        result = ReplyGenerator(transport=transport).generate(item())
+        self.assertEqual(result[2:4], ["", ""])
+        self.assertTrue(result[0] and result[4])
+        self.assertEqual(result.errors, [None, "connection_error", None])
+
+    def test_disabled_groups_do_not_request_model(self):
+        transport = Mock(return_value=answer())
+        result = ReplyGenerator(transport=transport).generate(
+            item(), tones=("关闭此组", "高情商协作", "关闭此组"))
+        self.assertEqual(transport.call_count, 1)
+        self.assertEqual(result[:2] + result[4:], [""] * 4)
+        with self.assertRaises(ValueError):
+            ReplyGenerator(transport=transport).generate(item(), tones=("关闭此组",) * 3)
+
+    def test_first_complete_line_is_published_before_second_arrives(self):
+        updates = []
+        def stream(*args):
+            yield {"choices": [{"delta": {"content": "虚构第一条。\n"}}]}
+            self.assertEqual(updates[-1][0][0], "虚构第一条。")
+            self.assertEqual(updates[-1][0][1], "")
+            yield {"choices": [{"delta": {"content": "虚构"}}]}
+            self.assertEqual(len(updates), 1)
+            yield {"choices": [{"delta": {"content": "第二条。"}, "finish_reason": "stop"}]}
+        result = ReplyGenerator(stream_transport=stream).generate(
+            item(), tones=("专业直接", "关闭此组", "关闭此组"),
+            on_update=lambda *value: updates.append(value))
+        self.assertEqual(result[:2], ["虚构第一条。", "虚构第二条。"])
+
+    def test_broken_stream_preserves_complete_line_only(self):
+        def stream(*args):
+            yield {"choices": [{"delta": {"content": "完整回复。\n未完成"}}]}
+        result = ReplyGenerator(stream_transport=stream).generate(item())
+        self.assertEqual(result[:2], ["完整回复。", ""])
+        self.assertEqual(result.errors, ["connection_error"] * 3)
+
+    def test_anthropic_stream_ignores_thinking(self):
+        def stream(*args):
+            yield {"type": "content_block_delta", "delta": {"type": "thinking_delta", "thinking": "hidden"}}
+            yield {"type": "content_block_delta", "delta": {"type": "text_delta", "text": "第一条\n第二条"}}
+            yield {"type": "message_stop"}
+        result = ReplyGenerator(provider="anthropic", base="https://api.anthropic.com", key="fake",
+                                stream_transport=stream).generate(item())
+        self.assertEqual(result[:2], ["第一条", "第二条"])

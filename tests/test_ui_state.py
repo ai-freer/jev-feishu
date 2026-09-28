@@ -55,6 +55,61 @@ class FakeProbe:
 
 
 class RuntimeTests(unittest.TestCase):
+    def test_stream_progress_is_discarded_when_foreground_changes(self):
+        from src.jev_feishu.session import AnalysisInput, VersionStamp
+        item = AnalysisInput(VersionStamp(1, REF, "om_fake", None), "虚构消息", ())
+        session = Mock()
+        session.is_current.return_value = True
+        self.probe.current = replace(self.probe.current, epoch=2)
+        def generate(*args, on_update, **kwargs):
+            on_update(("旧会话候选",) * 6, (None,) * 3)
+            return ["旧会话候选"] * 6
+        self.generator.generate.side_effect = generate
+        result = self.runtime._generate(item, "qwen3.5:4b", self.runtime._tones, None, 1, session)
+        self.assertEqual(result.error, "stale_result")
+        self.assertTrue(self.runtime._progress.empty())
+
+    def test_generation_publishes_while_judgement_is_blocked(self):
+        from src.jev_feishu.session import AnalysisInput, VersionStamp
+        from src.jev_feishu.jev import Verdict
+        judge_started, release_judge, generated = Event(), Event(), Event()
+        session = Mock()
+        session.is_current.return_value = True
+        item = AnalysisInput(VersionStamp(1, REF, "om_fake", None), "虚构消息", ())
+        def judge(_item):
+            judge_started.set()
+            self.assertTrue(release_judge.wait(3))
+            return Verdict("问进度", .8, 2)
+        def generate(*args, on_update, **kwargs):
+            self.assertTrue(judge_started.wait(3))
+            on_update(("虚构首条", "", "", "", "", ""), (None,) * 3)
+            generated.set()
+            return ["虚构首条", "虚构第二条", "", "", "", ""]
+        self.judge.judge.side_effect = judge
+        self.generator.generate.side_effect = generate
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(self.runtime._generate, item, "qwen3.5:4b",
+                                 self.runtime._tones, None, None, session)
+            try:
+                self.assertTrue(generated.wait(3))
+                progress = self.runtime._progress.get(timeout=1)
+                self.assertEqual(progress.replies[0], "虚构首条")
+                self.assertIsNone(progress.verdict)
+                self.assertFalse(future.done())
+            finally:
+                release_judge.set()
+            self.assertEqual(future.result(timeout=3).verdict.intent, "问进度")
+
+    def test_rank_only_successful_candidates_preserves_slot_positions(self):
+        from src.jev_feishu.runtime import ResultBundle
+        session = Mock()
+        session.is_current.return_value = True
+        self.judge.rank_candidates.return_value = (.7, .3)
+        result = ResultBundle(("", "", "候选一", "候选二", "", ""), None)
+        ranked = self.runtime._rank(result, session)
+        self.assertEqual(ranked.scores, (None, None, .7, .3, None, None))
+        self.assertEqual(self.judge.rank_candidates.call_args.args[1], ("候选一", "候选二"))
+
     def test_mode_switch_discards_previous_reply_and_enables_viewport(self):
         self.runtime.start()
         self.runtime.pulse()

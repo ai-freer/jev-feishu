@@ -5,7 +5,7 @@ from Foundation import NSObject, NSMakeRect, NSTimer
 import objc
 from . import __version__
 
-from .replies import TONES
+from .replies import DISABLED_TONE, TONES
 from .model_services import PROVIDERS, PROVIDER_BASES, is_loopback
 from .model_settings import ModelSettingsEditor, settings_error
 
@@ -182,6 +182,8 @@ class HUDController(NSObject):
         self.fields = []
         self.score_labels = []
         self.tone_selectors = []
+        self.reply_rows = []
+        self.group_layout = []
         for tone_index, tone in enumerate(self.runtime.display().tones):
             heading_y = 428 - tone_index * 128
             card = AppKit.NSBox.alloc().initWithFrame_(NSMakeRect(16, heading_y - 90, 468, 116))
@@ -198,7 +200,7 @@ class HUDController(NSObject):
             view.addSubview_(heading)
             selector = AppKit.NSPopUpButton.alloc().initWithFrame_pullsDown_(
                 NSMakeRect(92, heading_y, 296, 22), False)
-            selector.addItemsWithTitles_(list(TONES))
+            selector.addItemsWithTitles_([*TONES, DISABLED_TONE])
             for name, instruction in TONES.items():
                 selector.itemWithTitle_(name).setToolTip_(instruction)
             selector.selectItemWithTitle_(tone)
@@ -213,7 +215,7 @@ class HUDController(NSObject):
                 y = heading_y - 40 - offset * 44
                 score = self._label(NSMakeRect(25, y + 9, 48, 20), "—", 11, bold=True)
                 score.setTextColor_(AppKit.NSColor.systemBlueColor())
-                score.setToolTip_("候选相对推荐度：在本轮六条候选之间比较，不代表正确率。评分失败显示未评分。")
+                score.setToolTip_("候选相对推荐度：在本轮成功生成的候选之间比较，不代表正确率。")
                 view.addSubview_(score)
                 self.score_labels.append(score)
                 scroll, field = self._reply_editor(NSMakeRect(76, y, 312, 38))
@@ -221,17 +223,26 @@ class HUDController(NSObject):
                 field.setToolTip_("可编辑；长回复可在框内滚动查看，复制会保留全文。")
                 view.addSubview_(scroll)
                 self.fields.append(field)
-                view.addSubview_(self._label(NSMakeRect(405, y + 26, 66, 13),
+                kind_label = self._label(NSMakeRect(405, y + 26, 66, 13),
                                             "简短回应" if offset == 0 else "推进一步", 10,
-                                            secondary=True))
-                view.addSubview_(self._button(NSMakeRect(400, y - 1, 74, 27),
-                                              "复制", "copyReply:", index))
+                                            secondary=True)
+                copy_button = self._button(NSMakeRect(400, y - 1, 74, 27), "复制", "copyReply:", index)
+                view.addSubview_(kind_label)
+                view.addSubview_(copy_button)
+                self.reply_rows.append((scroll, score, kind_label, copy_button))
+            group_controls = [heading, selector]
+            for row in self.reply_rows[tone_index * 2:tone_index * 2 + 2]:
+                group_controls.extend(row)
+            self.group_layout.append((card, [(control, control.frame()) for control in group_controls]))
         self.permission = self._label(NSMakeRect(20, 39, 370, 20), "辅助功能：检查中", 11,
                                       secondary=True)
         view.addSubview_(self.permission)
         view.addSubview_(self._button(NSMakeRect(406, 35, 74, 28), "设置…", "showSettings:"))
         self.hint = self._label(NSMakeRect(20, 12, 460, 20), REPLY_HINT, 11, secondary=True)
         view.addSubview_(self.hint)
+        self.upper_layout = [(control, control.frame()) for control in view.subviews()
+                             if control.frame().origin.y >= 455]
+        self.layout_tones = None
 
         bar = AppKit.NSStatusBar.systemStatusBar()
         self.status_item = bar.statusItemWithLength_(AppKit.NSVariableStatusItemLength)
@@ -298,7 +309,31 @@ class HUDController(NSObject):
         self.source.setToolTip_(source or None)
         for index, selector in enumerate(self.tone_selectors):
             selector.selectItemWithTitle_(state.tones[index])
-            selector.setToolTip_(TONES[state.tones[index]])
+            selector.setToolTip_(TONES.get(state.tones[index], "关闭此组后不请求模型；至少保留一组。"))
+        for index, row in enumerate(getattr(self, "reply_rows", ())):
+            for control in row:
+                control.setHidden_(state.tones[index // 2] == DISABLED_TONE)
+        if hasattr(self, "group_layout") and self.layout_tones != state.tones:
+            self.layout_tones = state.tones
+            reduction = state.tones.count(DISABLED_TONE) * 84
+            for control, frame in self.upper_layout:
+                control.setFrame_(NSMakeRect(frame.origin.x, frame.origin.y - reduction,
+                                            frame.size.width, frame.size.height))
+            collapsed_before = 0
+            for slot, (card, controls) in enumerate(self.group_layout):
+                disabled = state.tones[slot] == DISABLED_TONE
+                shift = collapsed_before * 84 - reduction
+                heading_y = 428 - slot * 128 + shift
+                card.setFrame_(NSMakeRect(16, heading_y - (6 if disabled else 90),
+                                         468, 32 if disabled else 116))
+                for control, frame in controls:
+                    control.setFrame_(NSMakeRect(frame.origin.x, frame.origin.y + shift,
+                                                frame.size.width, frame.size.height))
+                collapsed_before += disabled
+            frame = self.panel.frame()
+            height = self.panel.frameRectForContentRect_(NSMakeRect(0, 0, WIDTH, HEIGHT - reduction)).size.height
+            self.panel.setFrame_display_(NSMakeRect(frame.origin.x, frame.origin.y + frame.size.height - height,
+                                                  frame.size.width, height), True)
         previous = self._rendered_result
         if state.result is not previous:
             self._rendered_result = state.result
@@ -307,6 +342,10 @@ class HUDController(NSObject):
             unchanged_text = bool(previous and state.result and previous.stamp == state.result.stamp
                                   and previous.replies == state.result.replies)
             for index, field in enumerate(() if unchanged_text else self.fields):
+                if (previous and state.result and previous.stamp == state.result.stamp
+                        and index < len(previous.replies)
+                        and str(field.string()) != previous.replies[index]):
+                    continue
                 undo = field.undoManager()
                 if undo is not None:
                     undo.removeAllActions()
@@ -316,11 +355,19 @@ class HUDController(NSObject):
             result = state.result
             edited = bool(result and len(result.replies) > index and
                           str(self.fields[index].string()) != result.replies[index])
+            error = (result.group_errors[index // 2] if result and
+                     len(result.group_errors) > index // 2 else None)
+            has_reply = bool(result and len(result.replies) > index and result.replies[index])
             value = ("已编辑" if edited else
-                     f"{result.scores[index]:.0%}" if result and len(result.scores) > index else
-                     "评分中" if result and result.ranking == "pending" else
-                     "未评分" if result and result.replies else "—")
+                     f"{result.scores[index]:.0%}" if result and len(result.scores) > index
+                        and result.scores[index] is not None else
+                     "失败" if error and not has_reply else
+                     "评分中" if has_reply and result.ranking == "pending" else
+                     "待评分" if has_reply and result.generating and state.cloud_enabled else
+                     "未评分" if has_reply else "生成中" if result and result.generating else "—")
             score.setStringValue_(value)
+            score.setToolTip_(("本组生成未完成：" + STATUS_TEXT.get(error, "请求失败") + "；可点击重试。")
+                              if error else "在本轮成功候选之间比较的相对推荐度，不代表正确率。")
         if state.result and state.result.verdict:
             verdict = state.result.verdict
             self.verdict.setStringValue_(

@@ -50,6 +50,18 @@ class Control:
 
 
 class FullFlowTests(unittest.TestCase):
+    def test_stream_updates_other_fields_without_overwriting_edit(self):
+        from dataclasses import replace
+        from src.jev_feishu.runtime import ResultBundle
+        result = ResultBundle(("首条", "", "", "", "", ""), None, generating=True)
+        state = replace(self.runtime.display(), result=result)
+        with patch("ApplicationServices.AXIsProcessTrusted", return_value=True):
+            self.hud._render(state)
+            self.hud.fields[0].setString_("用户修改")
+            self.hud._render(replace(state, result=replace(result, replies=("首条", "第二条", "", "", "", ""))))
+        self.assertEqual(self.hud.fields[0].value, "用户修改")
+        self.assertEqual(self.hud.fields[1].value, "第二条")
+
     def test_ranking_failure_keeps_replies_and_has_no_fake_scores(self):
         from src.jev_feishu.runtime import ResultBundle
         from src.jev_feishu.http_client import ModelError

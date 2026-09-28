@@ -4,6 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from queue import Empty, SimpleQueue
 from time import monotonic
+from threading import Lock
 
 from .chat_resolver import ChatResolver, LarkIdentityLookup
 from .config import load_config, save_jev_enabled, save_reply_tones
@@ -14,7 +15,7 @@ from .model_services import reply_options, validate_model
 from .jev import JevJudge, Verdict
 from .lark_reader import LarkReader
 from .privacy import PrivacyGate
-from .replies import DEFAULT_TONES, TONES, ReplyGenerator, validate_tones
+from .replies import DEFAULT_TONES, DISABLED_TONE, TONES, ReplyGenerator, validate_tones
 from .session import AnalysisInput, SessionController, VersionStamp
 from .types import ChatRef
 
@@ -27,8 +28,10 @@ class ResultBundle:
     source_text: str = ""
     stamp: VersionStamp | None = None
     analysis: AnalysisInput | None = None
-    scores: tuple[float, ...] = ()
+    scores: tuple[float | None, ...] = ()
     ranking: str = "off"
+    group_errors: tuple[str | None, ...] = ()
+    generating: bool = False
 
 
 @dataclass(frozen=True, repr=False)
@@ -77,6 +80,7 @@ class AppRuntime:
         self._next_read_at = 0.0
         self._model_futures = []
         self._rank_futures = []
+        self._progress = SimpleQueue()
         self._tone_verdict: tuple[VersionStamp, Verdict] | None = None
         self._status = "paused"
         self._result: ResultBundle | None = None
@@ -238,7 +242,7 @@ class AppRuntime:
 
     def set_tone(self, index: int, tone: str) -> bool:
         if (self._closed or type(index) is not int or not 0 <= index < 3
-                or type(tone) is not str or tone not in TONES):
+                or type(tone) is not str or tone not in (*TONES, DISABLED_TONE)):
             return False
         if self._tones[index] == tone:
             return True
@@ -412,6 +416,14 @@ class AppRuntime:
             self._next_read_at = monotonic() + 3
             self._read_future = self._pool.submit(self._read_verified, self._observed_epoch, self._session)
 
+        while True:
+            try:
+                progress = self._progress.get_nowait()
+            except Empty:
+                break
+            if self._session.accept_result(progress.stamp, progress):
+                self._result = progress
+                self._status = "generating"
         pending = []
         for stamp, future in self._model_futures:
             if not future.done():
@@ -443,10 +455,13 @@ class AppRuntime:
         if not session.is_current(result.stamp) or not self._gate.allows_cloud():
             return replace(result, ranking="off")
         try:
-            scores = self._judge.rank_candidates(result.analysis, result.replies)
-            if not isinstance(scores, tuple) or len(scores) != len(result.replies):
+            active = tuple(text for text in result.replies if text)
+            scores = self._judge.rank_candidates(result.analysis, active)
+            if not isinstance(scores, tuple) or len(scores) != len(active):
                 raise ModelError("invalid_response")
-            return replace(result, scores=scores, ranking="ready")
+            values = iter(scores)
+            return replace(result, scores=tuple(next(values) if text else None for text in result.replies),
+                           ranking="ready")
         except Exception:
             return replace(result, ranking="unavailable")
 
@@ -498,19 +513,50 @@ class AppRuntime:
             return ResultBundle((), None, "stale_result")
         verdict = cached_verdict
         cloud_error = None
-        if verdict is None:
+        partial = ResultBundle(("",) * 6, verdict, source_text=item.text, stamp=item.stamp,
+                               analysis=item, generating=True)
+        lock = Lock()
+
+        def publish(replies=None, errors=None):
+            nonlocal partial
+            if not session.is_current(item.stamp):
+                return
+            if expected_epoch is not None and self._probe.observe().epoch != expected_epoch:
+                return
+            with lock:
+                partial = replace(partial, verdict=verdict,
+                                  replies=replies if replies is not None else partial.replies,
+                                  group_errors=errors if errors is not None else partial.group_errors)
+                self._progress.put(partial)
+
+        def judge():
+            nonlocal verdict, cloud_error
+            if verdict is not None or not session.is_current(item.stamp):
+                return
             try:
                 verdict = self._judge.judge(item)
             except ModelError as error:
                 cloud_error = str(error)
-        if not session.is_current(item.stamp):
-            return ResultBundle((), None, "stale_result")
+            except Exception:
+                cloud_error = "internal_error"
+            publish()
+
+        judge_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="jev-judge")
+        judging = judge_pool.submit(judge)
+        batch = None
+        local_error = None
         try:
-            replies = tuple(self._generator.generate(item, model,
-                                   should_continue=lambda: session.is_current(item.stamp), tones=tones))
-            if expected_epoch is not None and self._probe.observe().epoch != expected_epoch:
-                return ResultBundle((), None, "stale_result")
-            return ResultBundle(replies, verdict, cloud_error, item.text, item.stamp, item,
-                                ranking="pending" if verdict and self._gate.allows_cloud() else "off")
+            batch = self._generator.generate(item, model,
+                    should_continue=lambda: session.is_current(item.stamp), tones=tones, on_update=publish)
         except ModelError as error:
-            return ResultBundle((), verdict, str(error), item.text, item.stamp)
+            local_error = str(error)
+        finally:
+            judging.result()
+            judge_pool.shutdown(wait=False)
+        if (not session.is_current(item.stamp) or
+                expected_epoch is not None and self._probe.observe().epoch != expected_epoch):
+            return ResultBundle((), None, "stale_result")
+        return ResultBundle(tuple(batch) if batch is not None else (), verdict, local_error or cloud_error,
+                            item.text, item.stamp, item,
+                            ranking="pending" if batch and verdict and self._gate.allows_cloud() else "off",
+                            group_errors=tuple(getattr(batch, "errors", ())))

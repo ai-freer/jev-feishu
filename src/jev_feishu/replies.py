@@ -3,7 +3,7 @@
 import json
 import re
 
-from .http_client import ModelError, post_json
+from .http_client import ModelError, post_json, post_stream
 from .model_services import auth_headers, is_loopback, service_endpoint, validate_key, validate_model
 from .session import AnalysisInput, model_input
 
@@ -39,6 +39,7 @@ TONES = {
                 "表达示例：需求可以临时加，时间不会跟着翻倍；先说清最重要的是哪一项。",
 }
 DEFAULT_TONES = ("专业直接", "高情商协作", "轻松同事")
+DISABLED_TONE = "关闭此组"
 LEGACY_TONES = {
     "高情商话术": "高情商协作", "贴吧老哥": "轻松同事", "稳如老狗": "专业直接",
     "拒绝加班": "高情商拒绝加班", "卑微乙方": "专业对客", "职场黑话": "向上同步",
@@ -77,7 +78,9 @@ OUTPUT_RULES = """只输出两行不同的候选回复，每行一条，不编�
 
 def validate_tones(tones) -> tuple[str, str, str]:
     selected = tuple(tones)
-    if len(selected) != 3 or any(type(tone) is not str or tone not in TONES for tone in selected):
+    if (len(selected) != 3
+            or any(type(tone) is not str or tone not in (*TONES, DISABLED_TONE) for tone in selected)
+            or not any(tone in TONES for tone in selected)):
         raise ValueError("invalid_reply_tones")
     return selected
 
@@ -95,23 +98,32 @@ def _parse_lines(raw: str) -> list[str]:
     return lines[:2]
 
 
+class ReplyBatch(list):
+    def __init__(self):
+        super().__init__([""] * 6)
+        self.errors = [None] * 3
+
+
 class ReplyGenerator:
     def __init__(self, base: str = "http://127.0.0.1:11434/v1", transport=post_json,
-                 *, provider="ollama", key=""):
+                 *, provider="ollama", key="", stream_transport=None):
         self._url = service_endpoint(provider, base)
         self._provider = provider
         self._key = validate_key(key)
         self._transport = transport
+        self._stream = stream_transport or (post_stream if transport is post_json else None)
 
     def generate(self, item: AnalysisInput, model: str = "qwen3.5:4b", should_continue=lambda: True,
-                 tones=DEFAULT_TONES) -> list[str]:
+                 tones=DEFAULT_TONES, on_update=None) -> list[str]:
         model = validate_model(model)
         if self._provider != "ollama" and not is_loopback(self._url) and not self._key:
             raise ModelError("not_configured")
         selected = validate_tones(tones)
         chat_input = json.dumps(model_input(item), ensure_ascii=False)
-        candidates = []
-        for tone in selected:
+        candidates = ReplyBatch()
+        for slot, tone in enumerate(selected):
+            if tone == DISABLED_TONE:
+                continue
             if not should_continue():
                 raise ModelError("stale_result")
             instruction = TONES[tone]
@@ -130,13 +142,50 @@ class ReplyGenerator:
                 payload["system"] = prompt
                 payload["messages"] = [{"role": "user", "content": chat_input}]
             try:
-                data = self._transport(self._url, {"content-type": "application/json",
-                                       **auth_headers(self._provider, self._key)}, payload, 45)
-                if self._provider == "anthropic":
+                headers = {"content-type": "application/json", **auth_headers(self._provider, self._key)}
+                if self._stream:
+                    payload["stream"] = True
+                    raw = ""
+                    finished = False
+                    thinking = False
+                    for event in self._stream(self._url, headers, payload, 45):
+                        if not should_continue():
+                            raise ModelError("stale_result")
+                        if "error" in event or event.get("type") == "error":
+                            raise ModelError("invalid_response")
+                        if self._provider == "anthropic":
+                            delta = event.get("delta", {})
+                            chunk = delta.get("text", "") if delta.get("type") == "text_delta" else ""
+                            thinking |= delta.get("type") == "thinking_delta"
+                            finished |= event.get("type") == "message_stop"
+                        else:
+                            choices = event.get("choices", [])
+                            if not choices:
+                                continue
+                            delta = choices[0].get("delta", {})
+                            chunk = delta.get("content") or ""
+                            thinking |= bool(delta.get("reasoning") or delta.get("reasoning_content"))
+                            finished |= choices[0].get("finish_reason") == "stop"
+                        if not isinstance(chunk, str):
+                            raise ModelError("invalid_response")
+                        raw += chunk
+                        complete = _parse_lines(raw[:raw.rfind("\n") + 1])
+                        before = tuple(candidates)
+                        for offset, line in enumerate(complete):
+                            candidates[slot * 2 + offset] = line
+                        if on_update and tuple(candidates) != before:
+                            on_update(tuple(candidates), tuple(candidates.errors))
+                    if not finished:
+                        raise ModelError("connection_error")
+                    if not raw.strip() and thinking:
+                        raise ModelError("thinking_only")
+                else:
+                    data = self._transport(self._url, headers, payload, 45)
+                if not self._stream and self._provider == "anthropic":
                     raw = "\n".join(block["text"] for block in data["content"] if block.get("type") == "text")
                     if not raw.strip() and any(block.get("type") == "thinking" for block in data["content"]):
                         raise ModelError("thinking_only")
-                else:
+                elif not self._stream:
                     message = data["choices"][0]["message"]
                     raw = message.get("content") or ""
                     if not raw.strip() and (message.get("reasoning") or message.get("reasoning_content")):
@@ -144,7 +193,15 @@ class ReplyGenerator:
                 lines = _parse_lines(raw)
                 if len(lines) != 2:
                     raise ModelError("insufficient_candidates")
-                candidates.extend(lines)
+                candidates[slot * 2:slot * 2 + 2] = lines
             except (KeyError, IndexError, TypeError, AttributeError):
-                raise ModelError("invalid_response") from None
+                candidates.errors[slot] = "invalid_response"
+            except ModelError as error:
+                if str(error) == "stale_result":
+                    raise
+                candidates.errors[slot] = str(error)
+            if on_update:
+                on_update(tuple(candidates), tuple(candidates.errors))
+        if not any(candidates):
+            raise ModelError(next(error for error in candidates.errors if error))
         return candidates

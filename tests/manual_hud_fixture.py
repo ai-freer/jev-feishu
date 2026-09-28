@@ -15,7 +15,8 @@ def wait_for(runtime, predicate):
     deadline = time.monotonic() + 3
     while time.monotonic() < deadline:
         runtime.pulse()
-        if predicate(runtime.display()):
+        state = runtime.display()
+        if predicate(state) and not (state.result and state.result.generating):
             return
         time.sleep(0.01)
     raise AssertionError("fictional packaged runtime did not reach expected state")
