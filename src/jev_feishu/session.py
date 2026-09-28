@@ -16,6 +16,7 @@ class VersionStamp:
     chat_ref: ChatRef
     message_id: str
     update_time: str | None
+    context_key: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, repr=False)
@@ -27,13 +28,16 @@ class AnalysisInput:
     target_sender: str = "对方（具体身份未确认）"
     target_quote: str = ""
     context_quotes: tuple[str, ...] = ()
+    following_self: tuple[str, ...] = ()
 
 
 def model_input(item: AnalysisInput) -> dict:
     """One bounded, chronological, speaker-labelled input for both models."""
     recent = []
-    budget = 8000
-    for index, text in enumerate(item.context[:8]):
+    following = [{"speaker": "我", "text": text[:1000], "truncated": len(text) > 1000}
+                 for text in item.following_self[-8:]]
+    budget = 8000 - sum(len(row["text"]) for row in following)
+    for index, text in enumerate(item.context[:8 - len(following)]):
         if budget <= 0:
             break
         value = text[:min(2000, budget)]
@@ -49,7 +53,10 @@ def model_input(item: AnalysisInput) -> dict:
             "text": item.text[:8000], "quoted_text": item.target_quote[:2000],
             "truncated": len(item.text) > 8000 or len(item.target_quote) > 2000},
             "previous_messages_oldest_first": list(reversed(recent)),
-            "context_incomplete": len(recent) < len(item.context) or any(m["truncated"] for m in recent)}
+            "following_self_messages_oldest_first": following,
+            "already_replied": bool(item.following_self),
+            "context_incomplete": len(recent) < len(item.context) or any(m["truncated"] for m in recent)
+                or len(following) < len(item.following_self) or any(m["truncated"] for m in following)}
 
 
 class SessionController:
@@ -201,9 +208,9 @@ class SessionController:
                 self._read_status = "viewport_unmatched" if not snapshot else "viewport_settling"
                 return None
             if visible:
-                target = snapshot[-1]
-                if target.own or not target.text.strip():
-                    self._read_status = "viewport_own" if target.own else "viewport_nontext"
+                target = next((row for row in reversed(snapshot) if not row.own), None)
+                if target is None or not target.text.strip():
+                    self._read_status = "viewport_own" if target is None else "viewport_nontext"
                     self._target_text = ""
                     self._candidate = None
                     self._stamp = None
@@ -215,14 +222,17 @@ class SessionController:
                 if self._last_key == key:
                     return None
                 self._last_key = key
-                stamp = VersionStamp(self._epoch, self._ref, *key)
+                stamp = VersionStamp(self._epoch, self._ref, *key,
+                                     tuple(row.text + row.quote for row in snapshot))
                 self._stamp = stamp
                 self._candidate = None
-                prior = tuple(row for row in reversed(snapshot[:-1]) if row.text.strip())[:8]
+                index = snapshot.index(target)
+                prior = tuple(row for row in reversed(snapshot[:index]) if row.text.strip())[:8]
                 return AnalysisInput(stamp, target.text, tuple(row.text for row in prior),
                                      tuple("我" if row.own else "对方（具体身份未确认）" for row in prior),
                                      target_quote=target.quote,
-                                     context_quotes=tuple(row.quote for row in prior))
+                                     context_quotes=tuple(row.quote for row in prior),
+                                     following_self=tuple(row.text or "[本人非文本消息]" for row in snapshot[index + 1:]))
             if now < self._next_poll:
                 return None
             ref, epoch = self._ref, self._epoch
@@ -254,7 +264,8 @@ class SessionController:
                 if current is not None and (current.deleted or current.update_time != self._stamp.update_time):
                     self._candidate = None
                     self._stamp = None
-            if not messages or messages[0].deleted or messages[0].sender_id == self._own_sender_id:
+            if not messages or messages[0].deleted:
+                self._last_key = None
                 self._target_text = ""
                 self._candidate = None
                 self._stamp = None
@@ -263,17 +274,30 @@ class SessionController:
                 return None
             incoming = [m for m in messages if not m.deleted and m.sender_id != self._own_sender_id]
             if not incoming:
+                self._last_key = None
+                self._target_text = ""
+                self._candidate = None
+                self._stamp = None
+                self._read_status = "own_message"
                 return None
             latest = incoming[0]
+            if not latest.text.strip():
+                self._candidate = None
+                self._stamp = None
+                self._last_key = None
+                self._target_text = ""
+                self._read_status = "no_text"
+                return None
             self._target_text = latest.text
-            key = (latest.message_id, latest.update_time)
+            following = tuple(m.text or "[本人非文本消息]" for m in reversed(messages[:messages.index(latest)]) if not m.deleted)
+            key = (latest.message_id, latest.update_time, following)
             if self._last_key == key:
                 return None
             self._last_key = key
-            stamp = VersionStamp(epoch, ref, *key)
+            stamp = VersionStamp(epoch, ref, latest.message_id, latest.update_time, following)
             self._stamp = stamp
             self._candidate = None
-            prior = tuple(m for m in messages[messages.index(latest) + 1:] if not m.deleted)[:8]
+            prior = tuple(m for m in messages[messages.index(latest) + 1:] if not m.deleted and m.text.strip())[:8]
             speakers = {}
             def speaker(sender):
                 if sender == self._own_sender_id:
@@ -283,7 +307,8 @@ class SessionController:
                 return speakers[sender]
             target_sender = speaker(latest.sender_id)
             return AnalysisInput(stamp, latest.text, tuple(m.text for m in prior),
-                                 tuple(speaker(m.sender_id) for m in prior), target_sender)
+                                 tuple(speaker(m.sender_id) for m in prior), target_sender,
+                                 following_self=following)
 
     def accept_result(self, stamp: VersionStamp, candidate: object) -> bool:
         with self._lock:

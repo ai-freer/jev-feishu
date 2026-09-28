@@ -21,6 +21,19 @@ def item(ref=A):
 
 
 class JevTests(unittest.TestCase):
+    def test_ranking_preserves_candidate_indexes_and_respects_cloud_gate(self):
+        self.transport.return_value = {"answers": {"best": {"probabilities": {"0": .8, "1": .2}}}}
+        self.assertEqual(self.judge.rank_candidates(item(), ("候选一", "候选二")), (.8, .2))
+        self.gate.set_cloud(False)
+        self.transport.reset_mock()
+        self.assertEqual(self.judge.rank_candidates(item(), ("候选一",)), ())
+        self.transport.assert_not_called()
+
+    def test_invalid_or_missing_ranking_is_not_fabricated_as_zero(self):
+        for probabilities in ({}, {"0": float("nan")}, {"0": 2}, {"0": 0}):
+            self.transport.return_value = {"answers": {"best": {"probabilities": probabilities}}}
+            with self.assertRaises(ModelError):
+                self.judge.rank_candidates(item(), ("候选一",))
     def setUp(self):
         self.gate = PrivacyGate()
         self.transport = Mock(return_value={"answers": {

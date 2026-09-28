@@ -116,8 +116,8 @@ class VisibleSessionTests(unittest.TestCase):
         self.reader.list_recent.assert_not_called()
         self.assertIsNone(self.session.tick())
 
-    def test_bottom_own_or_unsupported_never_falls_back(self):
-        for text, own, status in (("自己的话", True, "viewport_own"), ("", False, "viewport_nontext")):
+    def test_bottom_own_falls_back_but_other_unsupported_does_not(self):
+        for text, own, status in (("自己的话", True, None), ("", False, "viewport_nontext")):
             self.setUp()
             self.session.set_follow_mode("visible")
             self.session.resume()
@@ -126,7 +126,13 @@ class VisibleSessionTests(unittest.TestCase):
                 VisibleMessage("2", text, own, 200),
             )), A)
             self.now = 1
-            self.assertIsNone(self.session.tick())
+            item = self.session.tick()
+            if own:
+                self.assertEqual(item.text, "上方文字")
+                self.assertEqual(item.following_self, ("自己的话",))
+                self.assertEqual(item.context, ())
+            else:
+                self.assertIsNone(item)
             self.assertEqual(self.session.read_status, status)
             self.reader.list_recent.assert_not_called()
             self.reader.list_visible.assert_not_called()

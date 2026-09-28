@@ -76,6 +76,11 @@ class FixtureScenario:
 
     def transport(self, url, headers, payload, timeout):
         kind = "jev" if url.endswith("/systemone") else "ollama"
+        if kind == "jev" and "best" in payload["questions"]:
+            self.model_calls.append(("ranking", payload["model"]))
+            return {"answers": {"best": {"probabilities": {
+                key: 1 / len(payload["questions"]["best"]["criteria"])
+                for key in payload["questions"]["best"]["criteria"]}}}}
         self.model_calls.append((kind, payload["model"]))
         error = self.cloud_error if kind == "jev" else self.local_error
         if error:

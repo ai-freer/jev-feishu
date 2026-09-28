@@ -62,10 +62,12 @@ class SessionTests(unittest.TestCase):
         self.assertIsNone(self.session.tick())
         self.assertEqual(self.session.candidate, "虚构候选")
 
-    def test_own_message_never_triggers(self):
+    def test_own_message_looks_back_and_preserves_following_reply(self):
         self.reader.list_recent.return_value = [msg(sender="ou_self"), msg("om_older")]
         self.activate()
-        self.assertIsNone(self.session.tick())
+        item = self.session.tick()
+        self.assertEqual(item.stamp.message_id, "om_older")
+        self.assertEqual(item.following_self, ("虚构消息",))
 
     def test_own_reply_or_new_unsupported_message_clears_old_candidate(self):
         self.activate()
@@ -73,7 +75,9 @@ class SessionTests(unittest.TestCase):
         self.session.accept_result(first.stamp, "旧候选")
         self.reader.list_recent.return_value = [msg("om_own", "ou_self"), msg()]
         self.now = 3
-        self.assertIsNone(self.session.tick())
+        updated = self.session.tick()
+        self.assertTrue(updated.following_self)
+        self.assertFalse(self.session.is_current(first.stamp))
         self.assertIsNone(self.session.candidate)
         self.reader.list_recent.return_value = []
         self.now = 6

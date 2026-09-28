@@ -50,6 +50,30 @@ class Control:
 
 
 class FullFlowTests(unittest.TestCase):
+    def test_ranking_failure_keeps_replies_and_has_no_fake_scores(self):
+        from src.jev_feishu.runtime import ResultBundle
+        from src.jev_feishu.http_client import ModelError
+        session = Mock()
+        session.is_current.return_value = True
+        result = ResultBundle(("候选一", "候选二"), None, ranking="pending")
+        with patch.object(self.runtime._judge, "rank_candidates", side_effect=ModelError("connection_error")):
+            ranked = self.runtime._rank(result, session)
+        self.assertEqual(ranked.replies, result.replies)
+        self.assertEqual(ranked.ranking, "unavailable")
+        self.assertEqual(ranked.scores, ())
+
+    def test_score_only_update_preserves_user_edits(self):
+        from dataclasses import replace
+        from src.jev_feishu.runtime import ResultBundle
+        result = ResultBundle(tuple(f"候选{i}" for i in range(6)), None, ranking="pending")
+        state = replace(self.runtime.display(), result=result)
+        with patch("ApplicationServices.AXIsProcessTrusted", return_value=True):
+            self.hud._render(state)
+            self.hud.fields[0].setString_("用户已修改")
+            self.hud._render(replace(state, result=replace(result, ranking="ready", scores=(1/6,) * 6)))
+        self.assertEqual(self.hud.fields[0].value, "用户已修改")
+        self.assertEqual(self.hud.score_labels[0].value, "已编辑")
+
     def test_verified_target_is_visible_before_generation_finishes(self):
         from dataclasses import replace
         state = replace(self.runtime.display(), status="generating", target_text="已核实的历史目标")
@@ -65,9 +89,10 @@ class FullFlowTests(unittest.TestCase):
         self.hud.runtime = self.runtime
         self.hud._rendered_result = None
         for name in ("status", "chat", "run_button", "retry_button",
-                     "model_select", "permission", "verdict", "source", "advice", "hint"):
+                     "model_select", "permission", "verdict", "source", "advice", "hint", "confidence", "risk"):
             setattr(self.hud, name, Control())
         self.hud.fields = [Control() for _ in range(6)]
+        self.hud.score_labels = [Control() for _ in range(6)]
         self.hud.tone_selectors = [Control() for _ in range(3)]
         self.addCleanup(self.scenario.close)
         self.addCleanup(self.runtime.close)
@@ -85,7 +110,7 @@ class FullFlowTests(unittest.TestCase):
         self.assertEqual(sum(bool(field.value) for field in self.hud.fields), 6)
         self.assertTrue(any(kind == "jev" for kind, model in self.scenario.model_calls))
         self.assertIn("问进度", self.hud.verdict.value)
-        self.assertIn("90%", self.hud.verdict.value)
+        self.assertIn("90%", self.hud.confidence.value)
         self.assertIn("虚构验收消息 a", self.hud.source.value)
         self.assertIn("虚构验收消息 a", self.hud.source.tooltip)
         self.assertIn("下次更新时间", self.hud.advice.value)

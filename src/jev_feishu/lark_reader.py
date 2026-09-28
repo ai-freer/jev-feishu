@@ -20,7 +20,7 @@ def _string(data, key):
     return value
 
 
-def parse_messages(envelope: dict, *, latest_only=True) -> list[TextMessage]:
+def parse_messages(envelope: dict, *, latest_only=True, preserve_nontext=False) -> list[TextMessage]:
     if not isinstance(envelope, dict) or envelope.get("ok") is not True:
         raise ReaderError("cli_error")
     if envelope.get("identity") != "user":
@@ -46,7 +46,8 @@ def parse_messages(envelope: dict, *, latest_only=True) -> list[TextMessage]:
         if type(item.get("updated")) is not bool:
             raise ReaderError("invalid_response")
         # Tombstones must survive filtering so callers can invalidate old replies.
-        if not deleted and (msg_type != "text" or item.get("thread_id")):
+        unsupported = msg_type != "text" or bool(item.get("thread_id"))
+        if not deleted and unsupported and not preserve_nontext:
             continue
         message_id = _string(item, "message_id")
         create_time = _string(item, "create_time")
@@ -62,6 +63,9 @@ def parse_messages(envelope: dict, *, latest_only=True) -> list[TextMessage]:
         if not isinstance(sender, dict):
             raise ReaderError("invalid_response")
         sender_id = _string(sender, "id")
+        if unsupported:
+            result.append(TextMessage(message_id, sender_id, "", create_time, update_time, False))
+            continue
         content = item.get("content")
         if not isinstance(content, str):
             raise ReaderError("invalid_response")
@@ -84,7 +88,7 @@ class LarkReader:
             flag, ref.value, "--page-size", str(limit), "--order", "desc",
             "--no-reactions", "--json",
         ]
-        return parse_messages(self._call(command))
+        return parse_messages(self._call(command), latest_only=False, preserve_nontext=True)
 
     def list_visible(self, ref, visible):
         if ref.kind != "chat":

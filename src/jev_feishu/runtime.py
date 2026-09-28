@@ -1,7 +1,7 @@
 """Connect foreground observation, identity lookup, read and model workers."""
 
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from queue import Empty, SimpleQueue
 from time import monotonic
 
@@ -26,6 +26,9 @@ class ResultBundle:
     error: str | None = None
     source_text: str = ""
     stamp: VersionStamp | None = None
+    analysis: AnalysisInput | None = None
+    scores: tuple[float, ...] = ()
+    ranking: str = "off"
 
 
 @dataclass(frozen=True, repr=False)
@@ -73,6 +76,7 @@ class AppRuntime:
         self._read_future = None
         self._next_read_at = 0.0
         self._model_futures = []
+        self._rank_futures = []
         self._tone_verdict: tuple[VersionStamp, Verdict] | None = None
         self._status = "paused"
         self._result: ResultBundle | None = None
@@ -189,6 +193,7 @@ class AppRuntime:
         self._detect_token = None
         self._read_future = None
         self._model_futures = []
+        self._rank_futures = []
         self._tone_verdict = None
 
     def _idle_status(self) -> str:
@@ -393,8 +398,8 @@ class AppRuntime:
                     reuse = self._tone_verdict
                     self._tone_verdict = None
                     cached_verdict = (reuse[1] if reuse and
-                        (reuse[0].chat_ref, reuse[0].message_id, reuse[0].update_time) ==
-                        (item.stamp.chat_ref, item.stamp.message_id, item.stamp.update_time)
+                        (reuse[0].chat_ref, reuse[0].message_id, reuse[0].update_time, reuse[0].context_key) ==
+                        (item.stamp.chat_ref, item.stamp.message_id, item.stamp.update_time, item.stamp.context_key)
                         else None)
                     self._model_futures.append((item.stamp,
                         self._pool.submit(self._generate, item, model, tones, cached_verdict,
@@ -421,7 +426,29 @@ class AppRuntime:
             if self._session.accept_result(stamp, result):
                 self._result = result
                 self._status = ("manual" if self._manual else "ready") if not result.error else result.error
+                if result.replies and result.ranking == "pending":
+                    self._rank_futures.append((stamp, self._pool.submit(self._rank, result, self._session)))
         self._model_futures = pending
+        pending_ranks = []
+        for stamp, future in self._rank_futures:
+            if not future.done():
+                pending_ranks.append((stamp, future))
+                continue
+            result = future.result()
+            if self._session.accept_result(stamp, result):
+                self._result = result
+        self._rank_futures = pending_ranks
+
+    def _rank(self, result, session):
+        if not session.is_current(result.stamp) or not self._gate.allows_cloud():
+            return replace(result, ranking="off")
+        try:
+            scores = self._judge.rank_candidates(result.analysis, result.replies)
+            if not isinstance(scores, tuple) or len(scores) != len(result.replies):
+                raise ModelError("invalid_response")
+            return replace(result, scores=scores, ranking="ready")
+        except Exception:
+            return replace(result, ranking="unavailable")
 
     def _invalidate_observed_changes(self):
         while True:
@@ -483,6 +510,7 @@ class AppRuntime:
                                    should_continue=lambda: session.is_current(item.stamp), tones=tones))
             if expected_epoch is not None and self._probe.observe().epoch != expected_epoch:
                 return ResultBundle((), None, "stale_result")
-            return ResultBundle(replies, verdict, cloud_error, item.text, item.stamp)
+            return ResultBundle(replies, verdict, cloud_error, item.text, item.stamp, item,
+                                ranking="pending" if verdict and self._gate.allows_cloud() else "off")
         except ModelError as error:
             return ResultBundle((), verdict, str(error), item.text, item.stamp)

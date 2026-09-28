@@ -10,6 +10,15 @@ from src.jev_feishu.replies import ReplyGenerator
 
 
 class ConversationContextTests(unittest.TestCase):
+    def test_following_own_replies_are_separate_and_share_context_budget(self):
+        from dataclasses import replace
+        data = model_input(replace(self.item(), context=("前文",) * 8, following_self=("已经答复", "稍后同步")))
+        self.assertTrue(data["already_replied"])
+        self.assertEqual(len(data["previous_messages_oldest_first"]), 6)
+        self.assertEqual([row["text"] for row in data["following_self_messages_oldest_first"]],
+                         ["已经答复", "稍后同步"])
+        self.assertTrue(all(row["speaker"] == "我" for row in data["following_self_messages_oldest_first"]))
+
     def item(self):
         return AnalysisInput(VersionStamp(1, ChatRef("chat", "oc_fixture"), "m", None),
                              "已检查，功能正常。", ("请你检查功能是否正常。", "我来检查。"),

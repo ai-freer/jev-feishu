@@ -30,7 +30,7 @@ ACTION_HINTS = {
 STATUS_TEXT = {
     "viewport_unmatched": "未读到可见消息；请让聊天内容出现在窗口内",
     "viewport_settling": "等待可见消息稳定…",
-    "viewport_own": "底部是自己的消息；滚动到需要回应的消息",
+    "viewport_own": "当前可见范围内没有对方消息",
     "viewport_nontext": "底部消息暂不支持；不会跳过它回应上方消息",
     "paused": "已暂停",
     "checking_dependencies": "正在检查飞书授权与本机模型…",
@@ -152,7 +152,7 @@ class HUDController(NSObject):
         self.follow_select.addItemsWithTitles_(["跟随最新消息", "跟随可见消息"])
         self.follow_select.setTarget_(self)
         self.follow_select.setAction_("followModeChanged:")
-        self.follow_select.setToolTip_("跟随屏幕最后一个可见气泡，直接读取正文；不要求它是会话最新消息。")
+        self.follow_select.setToolTip_("跟随最后一个对方可见气泡；末尾本人消息作为已回复背景。")
         view.addSubview_(self.follow_select)
         self.model_select = AppKit.NSPopUpButton.alloc().initWithFrame_pullsDown_(
             NSMakeRect(302, 622, 178, 32), False)
@@ -166,9 +166,13 @@ class HUDController(NSObject):
         self.source.cell().setUsesSingleLineMode_(False)
         self.source.cell().setLineBreakMode_(AppKit.NSLineBreakByWordWrapping)
         view.addSubview_(self.source)
-        self.verdict = self._label(NSMakeRect(20, 518, 460, 25), "Jev：等待判断", 14, bold=True)
+        self.verdict = self._label(NSMakeRect(20, 524, 255, 25), "Jev：等待判断", 14, bold=True)
         view.addSubview_(self.verdict)
-        self.advice = self._label(NSMakeRect(20, 494, 460, 20), "", 12, secondary=True)
+        self.confidence = self._label(NSMakeRect(20, 507, 250, 16), "", 10, secondary=True)
+        view.addSubview_(self.confidence)
+        self.risk = self._label(NSMakeRect(292, 524, 188, 25), "", 13, bold=True)
+        view.addSubview_(self.risk)
+        self.advice = self._label(NSMakeRect(20, 480, 460, 20), "", 11, secondary=True)
         view.addSubview_(self.advice)
         view.addSubview_(self._label(NSMakeRect(20, 460, 370, 25),
                                     "候选回复", 13, bold=True))
@@ -176,6 +180,7 @@ class HUDController(NSObject):
         self.retry_button.setEnabled_(False)
         view.addSubview_(self.retry_button)
         self.fields = []
+        self.score_labels = []
         self.tone_selectors = []
         for tone_index, tone in enumerate(self.runtime.display().tones):
             heading_y = 428 - tone_index * 128
@@ -206,7 +211,12 @@ class HUDController(NSObject):
             for offset in range(2):
                 index = tone_index * 2 + offset
                 y = heading_y - 40 - offset * 44
-                scroll, field = self._reply_editor(NSMakeRect(28, y, 360, 38))
+                score = self._label(NSMakeRect(25, y + 9, 48, 20), "—", 11, bold=True)
+                score.setTextColor_(AppKit.NSColor.systemBlueColor())
+                score.setToolTip_("候选相对推荐度：在本轮六条候选之间比较，不代表正确率。评分失败显示未评分。")
+                view.addSubview_(score)
+                self.score_labels.append(score)
+                scroll, field = self._reply_editor(NSMakeRect(76, y, 312, 38))
                 field.setAccessibilityLabel_(f"第{tone_index + 1}组" + ("简短回应" if offset == 0 else "推进一步"))
                 field.setToolTip_("可编辑；长回复可在框内滚动查看，复制会保留全文。")
                 view.addSubview_(scroll)
@@ -282,33 +292,57 @@ class HUDController(NSObject):
         self.permission.setStringValue_("辅助功能：已授权" if AX.AXIsProcessTrusted()
                                         else "辅助功能：未授权，请在系统设置中添加本应用")
         source = state.result.source_text if state.result and state.result.source_text else state.target_text
-        self.source.setStringValue_(message_preview(source) if source else "等待当前消息")
+        replied = bool(state.result and state.result.analysis and state.result.analysis.following_self)
+        self.source.setStringValue_(("【你已回复】" if replied else "") + message_preview(source)
+                                    if source else "等待当前消息")
         self.source.setToolTip_(source or None)
         for index, selector in enumerate(self.tone_selectors):
             selector.selectItemWithTitle_(state.tones[index])
             selector.setToolTip_(TONES[state.tones[index]])
-        if state.result is not self._rendered_result:
+        previous = self._rendered_result
+        if state.result is not previous:
             self._rendered_result = state.result
             self.hint.setStringValue_(REPLY_HINT)
             replies = state.result.replies if state.result else ()
-            for index, field in enumerate(self.fields):
+            unchanged_text = bool(previous and state.result and previous.stamp == state.result.stamp
+                                  and previous.replies == state.result.replies)
+            for index, field in enumerate(() if unchanged_text else self.fields):
                 undo = field.undoManager()
                 if undo is not None:
                     undo.removeAllActions()
                 field.setString_(replies[index] if index < len(replies) else "")
                 field.scrollRangeToVisible_((0, 0))
+        for index, score in enumerate(getattr(self, "score_labels", ())):
+            result = state.result
+            edited = bool(result and len(result.replies) > index and
+                          str(self.fields[index].string()) != result.replies[index])
+            value = ("已编辑" if edited else
+                     f"{result.scores[index]:.0%}" if result and len(result.scores) > index else
+                     "评分中" if result and result.ranking == "pending" else
+                     "未评分" if result and result.replies else "—")
+            score.setStringValue_(value)
         if state.result and state.result.verdict:
             verdict = state.result.verdict
             self.verdict.setStringValue_(
-                f"Jev：{verdict.intent}（{verdict.confidence:.0%}）  风险 {verdict.risk:.1f}/9")
+                f"意图：{verdict.intent}")
             self.verdict.setTextColor_(AppKit.NSColor.systemGreenColor() if verdict.risk < 3
                                        else AppKit.NSColor.systemOrangeColor() if verdict.risk < 7
                                        else AppKit.NSColor.systemRedColor())
-            self.advice.setStringValue_("回应要点：" + ACTION_HINTS.get(verdict.intent, "先确认对方诉求"))
+            if hasattr(self, "confidence"):
+                self.confidence.setStringValue_(f"意图置信度 {verdict.confidence:.0%}")
+                level = "低" if verdict.risk <= 3 else "中" if verdict.risk <= 6 else "高"
+                self.risk.setStringValue_(f"沟通风险 {level} · {verdict.risk:.0f}/9")
+                self.risk.setTextColor_(AppKit.NSColor.systemGreenColor() if verdict.risk <= 3 else
+                                        AppKit.NSColor.systemOrangeColor() if verdict.risk <= 6 else
+                                        AppKit.NSColor.systemRedColor())
+            self.advice.setStringValue_("行动建议：" + ACTION_HINTS.get(verdict.intent, "先确认对方诉求"))
         else:
             self.verdict.setStringValue_("Jev：" + ("等待判断" if state.cloud_enabled else "全局关闭"))
             self.verdict.setTextColor_(AppKit.NSColor.labelColor())
             self.advice.setStringValue_("")
+            if hasattr(self, "confidence"):
+                self.confidence.setStringValue_("")
+                self.risk.setStringValue_("")
 
     def toggleRun_(self, _sender):
         if self.runtime._manual:
