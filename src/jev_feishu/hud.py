@@ -10,7 +10,7 @@ from .model_services import PROVIDERS, PROVIDER_BASES, is_loopback
 from .model_settings import ModelSettingsEditor, settings_error
 
 
-WIDTH, HEIGHT = 500, 670
+WIDTH, HEIGHT = 500, 730
 REPLY_HINT = "AI 草稿：请核对事实与承诺，复制后自行发送。"
 ACTION_HINTS = {
     "派活": "先确认交付范围和期限",
@@ -136,46 +136,58 @@ class HUDController(NSObject):
         self.panel.center()
         view = self.panel.contentView()
 
-        self.status = self._label(NSMakeRect(20, 638, 460, 20), "已暂停", 12, secondary=True)
+        self.status = self._label(NSMakeRect(20, 698, 460, 20), "已暂停", 12, secondary=True)
         view.addSubview_(self.status)
-        self.chat = self._label(NSMakeRect(20, 604, 460, 27), "当前会话：未识别", 17, bold=True)
+        self.chat = self._label(NSMakeRect(20, 664, 460, 27), "当前会话：未识别", 17, bold=True)
         view.addSubview_(self.chat)
-        self.run_button = self._button(NSMakeRect(20, 562, 120, 32), "开始跟随", "toggleRun:")
+        self.run_button = self._button(NSMakeRect(20, 622, 120, 32), "开始跟随", "toggleRun:")
         view.addSubview_(self.run_button)
         self.follow_select = AppKit.NSPopUpButton.alloc().initWithFrame_pullsDown_(
-            NSMakeRect(143, 562, 155, 32), False)
+            NSMakeRect(143, 622, 155, 32), False)
         self.follow_select.addItemsWithTitles_(["跟随最新消息", "跟随可见消息"])
         self.follow_select.setTarget_(self)
         self.follow_select.setAction_("followModeChanged:")
         self.follow_select.setToolTip_("跟随屏幕最后一个可见气泡，直接读取正文；不要求它是会话最新消息。")
         view.addSubview_(self.follow_select)
         self.model_select = AppKit.NSPopUpButton.alloc().initWithFrame_pullsDown_(
-            NSMakeRect(302, 562, 178, 32), False)
+            NSMakeRect(302, 622, 178, 32), False)
         self.model_select.addItemsWithTitles_(list(self.runtime.available_reply_models))
         self.model_select.setTarget_(self)
         self.model_select.setAction_("modelChanged:")
         view.addSubview_(self.model_select)
 
-        view.addSubview_(self._label(NSMakeRect(20, 534, 460, 17), "当前目标（生成前可核对）", 11, secondary=True))
-        self.source = self._label(NSMakeRect(20, 489, 460, 40), "等待当前消息", 14)
+        view.addSubview_(self._label(NSMakeRect(20, 594, 460, 17), "当前目标（生成前可核对）", 11, secondary=True))
+        self.source = self._label(NSMakeRect(20, 549, 460, 40), "等待当前消息", 14)
         self.source.cell().setUsesSingleLineMode_(False)
         self.source.cell().setLineBreakMode_(AppKit.NSLineBreakByWordWrapping)
         view.addSubview_(self.source)
-        self.verdict = self._label(NSMakeRect(20, 458, 460, 25), "Jev：等待判断", 14, bold=True)
+        self.verdict = self._label(NSMakeRect(20, 518, 460, 25), "Jev：等待判断", 14, bold=True)
         view.addSubview_(self.verdict)
-        self.advice = self._label(NSMakeRect(20, 434, 460, 20), "", 12, secondary=True)
+        self.advice = self._label(NSMakeRect(20, 494, 460, 20), "", 12, secondary=True)
         view.addSubview_(self.advice)
-        view.addSubview_(self._label(NSMakeRect(20, 400, 370, 25),
-                                    "回复 · 简短回应 / 推进一步", 13, bold=True))
-        self.retry_button = self._button(NSMakeRect(406, 397, 74, 29), "重试", "retryCurrent:")
+        view.addSubview_(self._label(NSMakeRect(20, 460, 370, 25),
+                                    "候选回复", 13, bold=True))
+        self.retry_button = self._button(NSMakeRect(406, 457, 74, 29), "重试", "retryCurrent:")
         self.retry_button.setEnabled_(False)
         view.addSubview_(self.retry_button)
         self.fields = []
         self.tone_selectors = []
         for tone_index, tone in enumerate(self.runtime.display().tones):
-            heading_y = 368 - tone_index * 108
+            heading_y = 428 - tone_index * 128
+            card = AppKit.NSBox.alloc().initWithFrame_(NSMakeRect(16, heading_y - 90, 468, 116))
+            card.setBoxType_(AppKit.NSBoxCustom)
+            card.setTitlePosition_(AppKit.NSNoTitle)
+            card.setFillColor_(AppKit.NSColor.systemBlueColor().colorWithAlphaComponent_(0.055))
+            card.setBorderColor_(AppKit.NSColor.systemBlueColor().colorWithAlphaComponent_(0.16))
+            card.setBorderWidth_(1)
+            card.setCornerRadius_(8)
+            view.addSubview_(card)
+            heading = self._label(NSMakeRect(28, heading_y + 2, 62, 18),
+                                  f"方案 {tone_index + 1}", 11, bold=True)
+            heading.setTextColor_(AppKit.NSColor.systemBlueColor())
+            view.addSubview_(heading)
             selector = AppKit.NSPopUpButton.alloc().initWithFrame_pullsDown_(
-                NSMakeRect(20, heading_y, 370, 22), False)
+                NSMakeRect(92, heading_y, 296, 22), False)
             selector.addItemsWithTitles_(list(TONES))
             for name, instruction in TONES.items():
                 selector.itemWithTitle_(name).setToolTip_(instruction)
@@ -189,12 +201,15 @@ class HUDController(NSObject):
             for offset in range(2):
                 index = tone_index * 2 + offset
                 y = heading_y - 40 - offset * 44
-                scroll, field = self._reply_editor(NSMakeRect(20, y, 370, 38))
+                scroll, field = self._reply_editor(NSMakeRect(28, y, 360, 38))
                 field.setAccessibilityLabel_(f"第{tone_index + 1}组" + ("简短回应" if offset == 0 else "推进一步"))
                 field.setToolTip_("可编辑；长回复可在框内滚动查看，复制会保留全文。")
                 view.addSubview_(scroll)
                 self.fields.append(field)
-                view.addSubview_(self._button(NSMakeRect(406, y + 4, 74, 30),
+                view.addSubview_(self._label(NSMakeRect(405, y + 26, 66, 13),
+                                            "简短回应" if offset == 0 else "推进一步", 10,
+                                            secondary=True))
+                view.addSubview_(self._button(NSMakeRect(400, y - 1, 74, 27),
                                               "复制", "copyReply:", index))
         self.permission = self._label(NSMakeRect(20, 39, 370, 20), "辅助功能：检查中", 11,
                                       secondary=True)
