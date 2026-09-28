@@ -21,7 +21,7 @@ def visible_bubbles(rows, bounds):
     for token, text, own, rect in rows:
         left, top, w, h = rect
         if (w > 0 and h > 4 and left >= x and left + w <= x + width + 1
-                and top > y + 2 and top + h < y + height - 2 and text.strip()):
+                and top > y + 2 and top + h < y + height - 2):
             result.append(VisibleMessage(token, text, own, round(top)))
     return tuple(sorted(result, key=lambda row: row.top)[-8:])
 
@@ -76,8 +76,9 @@ def capture_visible(pane, header, read):
         if subtree is None:
             return ()
         rich = [n for n in subtree if "richTextContainer" in (read(n, "AXDOMClassList") or ())]
-        # Quotes, images and cards are not plain text targets.
+        # Preserve unsupported bubbles as anchors: never jump above them.
         if len(rich) != 1 or any(read(n, "AXRole") == "AXImage" for n in subtree):
+            rows.append((token, "", own, frame))
             continue
         content = descendants(rich[0], 100)
         if content is None:
@@ -85,4 +86,6 @@ def capture_visible(pane, header, read):
         parts = [read(n, "AXValue") for n in content if read(n, "AXRole") == "AXStaticText"]
         if parts and all(isinstance(v, str) for v in parts):
             rows.append((token, "".join(parts), own, frame))
+        else:
+            rows.append((token, "", own, frame))
     return visible_bubbles(rows, (area[0], top, area[2], bottom - top))

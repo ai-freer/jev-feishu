@@ -8,6 +8,14 @@ from tests import test_session as session_cases
 
 
 class ViewportTests(unittest.TestCase):
+    def test_bottom_unsupported_bubble_is_preserved_as_an_anchor(self):
+        result = visible_bubbles([
+            ("1", "上方可处理文字", False, (10, 150, 200, 40)),
+            ("2", "", False, (10, 250, 200, 80)),
+        ], (0, 100, 500, 400))
+        self.assertEqual(result[-1].token, "2")
+        self.assertEqual(result[-1].text, "")
+
     def test_only_complete_text_bubbles_inside_viewport(self):
         rows = [
             ("1", "顶部裁剪", False, (10, 100, 200, 1)),
@@ -44,9 +52,11 @@ class VisibleSessionTests(unittest.TestCase):
         self.now = 1
         item = self.session.tick()
         self.assertEqual(item.stamp.message_id, "om_old")
+        self.assertEqual(self.session.target_text, "历史问题")
         self.assertEqual(item.context, ("之前的上下文",))
         self.reader.list_recent.assert_not_called()
         self.session.update_current(replace(obs(2), visible_messages=()), A)
+        self.assertEqual(self.session.target_text, "")
         self.assertFalse(self.session.accept_result(item.stamp, "过时回复"))
 
     def test_empty_view_does_not_fall_back_to_latest(self):

@@ -19,6 +19,16 @@ def envelope(*items):
 
 
 class LarkReaderTests(unittest.TestCase):
+    def test_bottom_own_or_unsupported_message_never_replies_to_earlier_text(self):
+        from src.jev_feishu.viewport import VisibleMessage
+        for last, status in ((VisibleMessage("2", "自己的回复", True, 200), "viewport_own"),
+                             (VisibleMessage("2", "", False, 200), "viewport_nontext")):
+            runner = Mock()
+            with self.assertRaisesRegex(ReaderError, status):
+                LarkReader(runner).list_visible(ChatRef("chat", "oc_fake"),
+                    (VisibleMessage("1", "上方的问题不能被当成新目标", False, 100), last))
+            runner.assert_not_called()
+
     def test_duplicate_short_text_is_disambiguated_by_visible_predecessor(self):
         from src.jev_feishu.viewport import VisibleMessage
         a = message(message_id="om_a", content="好的", chat_id="oc_fake", create_time="2025-06-15 18:30")

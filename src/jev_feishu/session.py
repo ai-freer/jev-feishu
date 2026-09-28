@@ -50,6 +50,12 @@ class SessionController:
         self._follow_mode = "latest"
         self._visible_messages = ()
         self._settle_at = 0.0
+        self._target_text = ""
+
+    @property
+    def target_text(self):
+        with self._lock:
+            return self._target_text
 
     def set_follow_mode(self, mode):
         if mode not in ("latest", "visible"):
@@ -113,6 +119,7 @@ class SessionController:
 
     def _invalidate(self) -> None:
         self._epoch += 1
+        self._target_text = ""
         self._candidate = None
         self._stamp = None
         self._last_key = None
@@ -173,13 +180,15 @@ class SessionController:
         try:
             messages = (self._reader.list_visible(ref, snapshot) if visible
                         else self._reader.list_recent(ref))
-        except ReaderError:
+        except ReaderError as error:
             with self._lock:
                 if (self._active and self._ref == ref and self._epoch == epoch
                         and not self._paused and not self._overlay_focused):
                     self._failure_count += 1
                     self._next_poll = self._clock() + min(3 * (2 ** (self._failure_count - 1)), 60)
-                    self._read_status = "viewport_unmatched" if visible else "read_error"
+                    self._read_status = (str(error) if visible and str(error) in
+                        ("viewport_own", "viewport_nontext") else "viewport_unmatched" if visible else "read_error")
+                    self._target_text = ""
                     self._candidate = None
                     self._stamp = None
                     self._last_key = None
@@ -197,6 +206,7 @@ class SessionController:
                     self._candidate = None
                     self._stamp = None
             if not messages or messages[0].deleted or messages[0].sender_id == self._own_sender_id:
+                self._target_text = ""
                 self._candidate = None
                 self._stamp = None
                 self._read_status = ("no_text" if not messages else
@@ -206,6 +216,7 @@ class SessionController:
             if not incoming:
                 return None
             latest = incoming[0]
+            self._target_text = latest.text
             key = (latest.message_id, latest.update_time)
             if self._last_key == key:
                 return None

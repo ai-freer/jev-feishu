@@ -36,6 +36,7 @@ class DisplayState:
     cloud_enabled: bool
     result: ResultBundle | None
     tones: tuple[str, str, str]
+    target_text: str = ""
 
 
 class AppRuntime:
@@ -311,7 +312,8 @@ class AppRuntime:
     def display(self) -> DisplayState:
         ref = self._session.current_ref if self._session is not None else None
         return DisplayState(self._status, self._title if ref else None, self._model,
-                            self.jev_enabled, self._session.candidate if ref else None, self._tones)
+                            self.jev_enabled, self._session.candidate if ref else None, self._tones,
+                            self._session.target_text if ref else "")
 
     def pulse(self):
         if self._closed:

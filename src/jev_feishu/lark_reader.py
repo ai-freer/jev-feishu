@@ -89,10 +89,13 @@ class LarkReader:
     def list_visible(self, ref, visible):
         if ref.kind != "chat":
             raise ReaderError("viewport_unmatched")
-        incoming = [row for row in visible if not row.own]
-        if not incoming:
+        if not visible:
             raise ReaderError("viewport_unmatched")
-        target = incoming[-1]
+        target = visible[-1]
+        if target.own:
+            raise ReaderError("viewport_own")
+        if not target.text.strip():
+            raise ReaderError("viewport_nontext")
         key = (ref, tuple((r.token, r.text, r.own) for r in visible))
         cache = self._visible_cache
         if cache and cache[0] == key:
@@ -147,7 +150,7 @@ class LarkReader:
             self._visible_cache = None
             raise ReaderError("viewport_unmatched")
         index = indexes[0]
-        predecessors = visible[:visible.index(target)]
+        predecessors = [row for row in visible[:visible.index(target)] if row.text.strip()]
         if predecessors:
             previous = normalized(predecessors[-1].text)
             if not any(normalized(m.text) == previous and not m.deleted for m in messages[index + 1:]):

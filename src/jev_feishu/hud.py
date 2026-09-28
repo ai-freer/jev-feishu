@@ -25,6 +25,8 @@ ACTION_HINTS = {
 STATUS_TEXT = {
     "viewport_unmatched": "可见消息无法唯一定位；请稍微滚动或切换跟随最新",
     "viewport_settling": "等待滚动停稳…",
+    "viewport_own": "底部是自己的消息；滚动到需要回应的消息",
+    "viewport_nontext": "底部消息暂不支持；不会跳过它回应上方消息",
     "paused": "已暂停",
     "checking_dependencies": "正在检查飞书授权与本机模型…",
     "lark_auth_unavailable": "飞书授权不可用；请打开设置与连接检查",
@@ -145,7 +147,7 @@ class HUDController(NSObject):
         self.follow_select.addItemsWithTitles_(["跟随最新消息", "跟随可见消息"])
         self.follow_select.setTarget_(self)
         self.follow_select.setAction_("followModeChanged:")
-        self.follow_select.setToolTip_("可见模式：滚动停稳后回应最下方完整可见的对方纯文字消息；无法可靠定位时停读。")
+        self.follow_select.setToolTip_("以底部最后一条完整可见消息为准；本人消息或不支持的类型会停读，不回退到上方消息。")
         view.addSubview_(self.follow_select)
         self.model_select = AppKit.NSPopUpButton.alloc().initWithFrame_pullsDown_(
             NSMakeRect(302, 562, 178, 32), False)
@@ -154,7 +156,7 @@ class HUDController(NSObject):
         self.model_select.setAction_("modelChanged:")
         view.addSubview_(self.model_select)
 
-        view.addSubview_(self._label(NSMakeRect(20, 534, 460, 17), "当前消息", 11, secondary=True))
+        view.addSubview_(self._label(NSMakeRect(20, 534, 460, 17), "当前目标（生成前可核对）", 11, secondary=True))
         self.source = self._label(NSMakeRect(20, 489, 460, 40), "等待当前消息", 14)
         self.source.cell().setUsesSingleLineMode_(False)
         self.source.cell().setLineBreakMode_(AppKit.NSLineBreakByWordWrapping)
@@ -259,9 +261,9 @@ class HUDController(NSObject):
         self.model_select.selectItemWithTitle_(state.model)
         self.permission.setStringValue_("辅助功能：已授权" if AX.AXIsProcessTrusted()
                                         else "辅助功能：未授权，请在系统设置中添加本应用")
-        self.source.setStringValue_(message_preview(state.result.source_text)
-                                    if state.result and state.result.source_text else "等待当前消息")
-        self.source.setToolTip_(state.result.source_text if state.result and state.result.source_text else None)
+        source = state.result.source_text if state.result and state.result.source_text else state.target_text
+        self.source.setStringValue_(message_preview(source) if source else "等待当前消息")
+        self.source.setToolTip_(source or None)
         for index, selector in enumerate(self.tone_selectors):
             selector.selectItemWithTitle_(state.tones[index])
             selector.setToolTip_(TONES[state.tones[index]])

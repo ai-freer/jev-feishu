@@ -50,6 +50,14 @@ class Control:
 
 
 class FullFlowTests(unittest.TestCase):
+    def test_verified_target_is_visible_before_generation_finishes(self):
+        from dataclasses import replace
+        state = replace(self.runtime.display(), status="generating", target_text="已核实的历史目标")
+        with patch("ApplicationServices.AXIsProcessTrusted", return_value=True):
+            self.hud._render(state)
+        self.assertEqual(self.hud.source.value, "已核实的历史目标")
+        self.assertTrue(all(not field.value for field in self.hud.fields))
+
     def setUp(self):
         self.scenario = FixtureScenario()
         self.runtime = self.scenario.make_runtime(ImmediateExecutor())
