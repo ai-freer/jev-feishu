@@ -1,4 +1,4 @@
-"""Read bounded, fully visible text bubbles from the verified chat pane."""
+"""Read bounded visible bubbles from the verified chat pane."""
 
 from dataclasses import dataclass
 
@@ -15,13 +15,28 @@ def normalized(text):
     return "".join(text.replace("\u200b", "").split())
 
 
+def bubble_text(subtree, read, descendants):
+    rich = [n for n in subtree if "richTextContainer" in (read(n, "AXDOMClassList") or ())]
+    if len(rich) != 1:
+        return ""
+    content = descendants(rich[0], 100)
+    if content is None:
+        return ""
+    # Reactions and quote headers are outside the body and must not veto text.
+    if any(read(n, "AXRole") == "AXImage" and
+           "larkw-emoji__img" not in (read(n, "AXDOMClassList") or ()) for n in content):
+        return ""
+    parts = [read(n, "AXValue") for n in content if read(n, "AXRole") == "AXStaticText"]
+    return "".join(parts) if parts and all(isinstance(v, str) for v in parts) else ""
+
+
 def visible_bubbles(rows, bounds):
     x, y, width, height = bounds
     result = []
     for token, text, own, rect in rows:
         left, top, w, h = rect
         if (w > 0 and h > 4 and left >= x and left + w <= x + width + 1
-                and top > y + 2 and top + h < y + height - 2):
+                and top < y + height - 2 and top + h > y + 2):
             result.append(VisibleMessage(token, text, own, round(top)))
     return tuple(sorted(result, key=lambda row: row.top)[-8:])
 
@@ -75,17 +90,6 @@ def capture_visible(pane, header, read):
         subtree = descendants(node, 200)
         if subtree is None:
             return ()
-        rich = [n for n in subtree if "richTextContainer" in (read(n, "AXDOMClassList") or ())]
         # Preserve unsupported bubbles as anchors: never jump above them.
-        if len(rich) != 1 or any(read(n, "AXRole") == "AXImage" for n in subtree):
-            rows.append((token, "", own, frame))
-            continue
-        content = descendants(rich[0], 100)
-        if content is None:
-            return ()
-        parts = [read(n, "AXValue") for n in content if read(n, "AXRole") == "AXStaticText"]
-        if parts and all(isinstance(v, str) for v in parts):
-            rows.append((token, "".join(parts), own, frame))
-        else:
-            rows.append((token, "", own, frame))
+        rows.append((token, bubble_text(subtree, read, descendants), own, frame))
     return visible_bubbles(rows, (area[0], top, area[2], bottom - top))

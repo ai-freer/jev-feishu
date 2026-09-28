@@ -23,8 +23,8 @@ ACTION_HINTS = {
     "夸奖": "表示感谢，回应具体成果",
 }
 STATUS_TEXT = {
-    "viewport_unmatched": "可见消息无法唯一定位；请稍微滚动或切换跟随最新",
-    "viewport_settling": "等待滚动停稳…",
+    "viewport_unmatched": "未读到可见消息；请让聊天内容出现在窗口内",
+    "viewport_settling": "等待可见消息稳定…",
     "viewport_own": "底部是自己的消息；滚动到需要回应的消息",
     "viewport_nontext": "底部消息暂不支持；不会跳过它回应上方消息",
     "paused": "已暂停",
@@ -147,7 +147,7 @@ class HUDController(NSObject):
         self.follow_select.addItemsWithTitles_(["跟随最新消息", "跟随可见消息"])
         self.follow_select.setTarget_(self)
         self.follow_select.setAction_("followModeChanged:")
-        self.follow_select.setToolTip_("以底部最后一条完整可见消息为准；本人消息或不支持的类型会停读，不回退到上方消息。")
+        self.follow_select.setToolTip_("跟随屏幕最后一个可见气泡，直接读取正文；不要求它是会话最新消息。")
         view.addSubview_(self.follow_select)
         self.model_select = AppKit.NSPopUpButton.alloc().initWithFrame_pullsDown_(
             NSMakeRect(302, 562, 178, 32), False)

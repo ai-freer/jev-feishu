@@ -173,13 +173,32 @@ class SessionController:
             if visible and (not snapshot or now < self._settle_at):
                 self._read_status = "viewport_unmatched" if not snapshot else "viewport_settling"
                 return None
+            if visible:
+                target = snapshot[-1]
+                if target.own or not target.text.strip():
+                    self._read_status = "viewport_own" if target.own else "viewport_nontext"
+                    self._target_text = ""
+                    self._candidate = None
+                    self._stamp = None
+                    self._last_key = None
+                    return None
+                self._read_status = None
+                self._target_text = target.text
+                key = (target.token, target.text)
+                if self._last_key == key:
+                    return None
+                self._last_key = key
+                stamp = VersionStamp(self._epoch, self._ref, *key)
+                self._stamp = stamp
+                self._candidate = None
+                context = tuple(row.text for row in reversed(snapshot[:-1]) if row.text.strip())[:2]
+                return AnalysisInput(stamp, target.text, context)
             if now < self._next_poll:
                 return None
             ref, epoch = self._ref, self._epoch
             self._next_poll = now + 3
         try:
-            messages = (self._reader.list_visible(ref, snapshot) if visible
-                        else self._reader.list_recent(ref))
+            messages = self._reader.list_recent(ref)
         except ReaderError as error:
             with self._lock:
                 if (self._active and self._ref == ref and self._epoch == epoch

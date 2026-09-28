@@ -60,7 +60,8 @@ class ForegroundProbe:
             if len(surface) == 6:
                 surface = (*surface, ())
             bundle, page, windows, title, recipient_match, external, messages = surface
-            signature = (bundle, page, windows, title, recipient_match, external, messages)
+            content = tuple((m.token, m.text, m.own) for m in messages)
+            signature = (bundle, page, windows, title, recipient_match, external, content)
             if signature != self._signature:
                 self._epoch += 1
                 self._signature = signature
